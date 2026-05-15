@@ -5,6 +5,8 @@ import yaml
 
 from starter import _apply_shared_runtime_bindings, _decode_models_dir, load_config
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 @pytest.mark.unit
 def test_load_config_contains_expected_top_level_keys():
@@ -79,7 +81,7 @@ def test_load_config_raises_clear_exception_for_invalid_top_level_shape(tmp_path
 
 @pytest.mark.unit
 def test_load_config_raises_clear_exception_for_missing_checkpoint_filename_pattern(tmp_path: Path):
-    with open('/home/runner/work/AstroGAN-UNet/AstroGAN-UNet/config.yaml', 'r', encoding='utf-8') as handle:
+    with open(REPO_ROOT / 'config.yaml', 'r', encoding='utf-8') as handle:
         cfg = yaml.safe_load(handle)
     del cfg['training']['checkpoint_restore_kwargs']['filename_pattern']
     config_path = tmp_path / 'broken.yaml'
