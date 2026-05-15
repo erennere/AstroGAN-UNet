@@ -1,0 +1,10 @@
+/.venv/
+/.venv-wsl/
+/.vscode/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+/data/
+/models/
+/histograms/
+/notebooks/

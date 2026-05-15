@@ -1,0 +1,391 @@
+paths:
+  data_dir: "../data" # Base dataset directory.
+  training_path: "{data_dir}/training_images" # Training FITS folder.
+  eval_path: "{data_dir}/eval_images" # Evaluation FITS folder.
+  test_path: "{data_dir}/test_images" # Test FITS folder.
+  metadata_csv: "{data_dir}/downloaded_metadata_{data_alias_enriched_hex}.csv" # Metadata table used by augmenters.
+  fit_info_csv: "{data_dir}/fit_info_{data_alias_enriched_hex}.csv" # Fit parameters table used when sigma_kernel_fn=fit.
+  models_dir: "../models" # Output folder hierarchy by model/data regimes including activation/output settings.
+  plots_dir: "../plots"
+  multimodal_metrics_dir: "../metrics/multi_modal" # Output directory for multi-model evaluation metrics CSVs and plots.
+  singlemodal_metrics_dir: "../metrics/single_modal" # Output directory for single-model evaluation metrics CSVs and plots.
+
+shared_bindings:
+  prefer_explicit_values: true # If true, explicit non-null values below override derived cross-section defaults.
+
+data:
+  type_of_image: SCI # Shared FITS HDU name used across data/create_dataset/evaluation/visualization.
+  ps: 256 # Patch size in pixels.
+  steps: 100 # Random patch candidates per image.
+  dk: 7 # Dark current parameter for poisson_noise.
+  ron: 3 # Readout noise parameter for poisson_noise.
+  save: false # If true, save intermediate generated images.
+  sv_name: null # Save filename when save=true.
+  path: null # Save path when save=true.
+  start: 2 # Start ratio for original augmentation.
+  stop: 6 # Stop ratio (exclusive) for original augmentation.
+  name_col: filename # Column containing FITS filenames.
+  exposure_col: sci_actual_duration # Column containing exposure time.
+  sigma_key: diff_sigma # Row key consumed by sigma_kernel_fn='row' resolver path.
+  location_col: location # Column containing training/eval location.
+  dataset: sci_data_set_name # Grouping identifier column.
+  low: 60 # Lower exposure/value bound.
+  high: 20000 # Upper exposure/value bound.
+  samples: 30000 # Training sample count target.
+  val_samples: 100 # Validation sample count target.
+  test_samples: 100 # Test sample count target.
+  times: 2 # Multiplicative exposure filter factor.
+  training: true # Training mode switch consumed by augmenters.
+  ratio_initial: 2 # First geometric ratio for geometric candidates strategy.
+  ratio_count: 10 # Number of geometric ratios.
+  ratio_growth: 1.5 # Geometric growth factor for ratios.
+  lowest_power: -4 # Lowest log10 power for augment_samples.
+  highest_power: 4 # Highest log10 power for augment_samples.
+  n_samples_per_magnitude: 3 # Samples per exponent magnitude.
+  delta: 0.3 # Relevance threshold used in filtering_df.
+  candidates_fn: exposure_ratio # Options: sigma_range, exposure_ratio.
+  post_filter_fn: default # Options: default.
+  sample_fn: exposure_ratio_v2 # Options: sigma_range, exposure_ratio, exposure_ratio_v2.
+  occurrences_per_col_D: 4 # Stage-1 cap: keep this many top occurrences per unique col_D value.
+  quantiles: [20, 40, 60, 80, 100] # Upper percentile bounds for stage-2 quantile bins.
+  percentages: [20, 20, 20, 20, 20] # Allocation weight (%) per quantile bin; proportional, need not sum to 100.
+  min_exp_ratio: 1.5 # Lower bound for exp_ratio filtering in post_filter.
+  max_exp_ratio: 100.0 # Upper bound for exp_ratio filtering in post_filter.
+  min_exp_time: 60 # Lower bound for new_exp_time filtering in post_filter.
+  cache_raw_metadata: true # Reuse sampled cache across repeated calls.
+  sub_sample_train: null # Optional train fraction sub-sample from cached set.
+  sub_sample_eval: null # Optional eval fraction sub-sample from cached set.
+  sigma_kernel_fn: row # Options: fit, row.
+  noise_fn: _simulated_image_from_exposure # Options: _simulated_image_from_exposure, _simulated_image_from_poisson.
+  min_value: 0.000000000001 # Lower clipping floor forwarded to selected noise_fn.
+  stats_name_fn: exposure # Options: sigma, exposure, exp_ratio.
+  training_cache_filepath: "{models_dir}/sampled_training_{model_alias_hex}.csv" # Cache file path for sampled training metadata.
+  eval_cache_filepath: "{models_dir}/sampled_eval_{model_alias_hex}.csv" # Cache file path for sampled eval metadata.
+  test_cache_filepath: "{models_dir}/sampled_test_{model_alias_hex}.csv" # Cache file path for sampled test metadata.
+  info_filepath: "{models_dir}/info_{model_alias_hex}.csv" # Path for saving intermediate candidate metadata.
+  results_path: "{models_dir}/checkpoints" # Output path for generated images when data.save=true.
+  nan_value: 0.0 # NaN replacement in exposure preprocessing.
+  posinf_value: 0.0 # +inf replacement in exposure preprocessing.
+  neginf_value: 0.0 # -inf replacement in exposure preprocessing.
+  training_path: null # Optional override; default derived from paths.training_path.
+  eval_path: null # Optional override; default derived from paths.eval_path.
+  fit_data_filepath: null # Optional override; default derived from paths.fit_info_csv.
+  metadata_filepath: null # Optional override; default derived from create_dataset.cropped_stats_output_file.
+  stats_column_map: null # Optional override; default derived from create_dataset.stats_column_map.
+  original_stats_prefix: null # Optional override; default derived from create_dataset.original_stats_prefix.
+  max_workers: 8 # Max concurrent FITS loads in training/eval data preparation.
+  checkpoint_custom_epoch: null # Optional override; default derived from training.checkpoint_custom_epoch.
+  checkpoint_restore_kwargs: null # Optional override; default derived from training.checkpoint_restore_kwargs.
+
+network:
+  depth: 5 # U-Net depth.
+  kernel_size: 3 # Convolution kernel size.
+  filter_size: 2 # Filter growth factor per depth.
+  pooling_size: 2 # Pooling size.
+  n_of_initial_channels: 64 # Base number of channels.
+  func: LeakyReLU # Activation class name. Options: LeakyReLU, ReLU.
+  batch_normalization: true # Enable batch normalization.
+  dropout_rate: 0.2 # Dropout probability (slightly stronger regularization for GAN stability).
+  func_kwargs: {} # Activation kwargs dict.
+  use_bias: false # Use bias in conv layers.
+  block_depth: 2 # Number of conv layers per block.
+  dropout_from_layer: 1 # First layer index where dropout starts.
+  attention: true # Enable attention gate in skip connections.
+  output_activation: null # Output activation for final layer. Options: null (linear), relu, sigmoid, tanh. Default null for regression.
+  kernel_initializer: he_normal # Kernel initializer for Conv2DTranspose layers. Options: null (TruncatedNormal), glorot_uniform, he_normal, etc.
+
+discriminator:
+  depth: 2 # Number of discriminator stages.
+  n_initial_filters: 64 # Filters in first stage.
+  filter_size: 2 # Channel multiplier per stage.
+  kernel_size: [3, 3] # Conv kernel size.
+  dropout_rate: 0.2 # Dropout rate in discriminator blocks.
+  func: LeakyReLU # Activation class name.
+  func_kwargs: {} # Activation kwargs dict.
+  output_activation: sigmoid # Final activation.
+  block_depth: 2 # Conv layers per discriminator stage.
+  batch_normalization: true # Enable batch normalization.
+  use_bias: false # Use bias in conv layers.
+  dropout_from_layer: 1 # First layer index where dropout starts.
+
+gan:
+  d_learning_rate: 0.0002 # Discriminator optimizer learning rate.
+  loss_fn: BinaryCrossentropy # Adversarial loss used by the discriminator and the generator's adversarial term.
+  adversarial_loss_weight: 1.0 # Weight applied to the generator adversarial term.
+  reconstruction_loss_weight: 100.0 # Weight applied to the generator reconstruction loss from training.g_loss_fn.
+  label_smoothing: 0.05 # Label smoothing passed to GAN model.
+
+training:
+  n_epochs: 60 # Total training epochs.
+  batch_size: 64 # Batch size (safer memory/stability with attention + GAN).
+  use_gan: true # If true train GAN, otherwise train only the network generator.
+  optimizer: Adam # Optimizer name. Options: Adam.
+  learning_rate: 0.0002 # Shared generator learning rate used in both UNet-only and GAN modes.
+  beta_1: 0.5 # Shared optimizer beta_1 used in both UNet-only and GAN modes.
+  g_loss_fn: log_cosh_loss # Generator reconstruction loss. Options: MeanAbsoluteError, scale_invariant_mae, log_cosh_loss.
+  change_learning_rate:
+    - [0, 0.0002] # (epoch, lr) schedule start.
+    - [40, 0.0001] # Mid-training LR decay.
+    - [80, 0.00005] # Late-training LR decay.
+  start_from_best: true # Restore from best checkpoint first.
+  start_from_last: false # Restore from latest regular checkpoint.
+  save_freq: 10 # Checkpoint period in epochs.
+  eval_save_percentage: 10 # Validation sampling percentage.
+  ds_save_percentage: 0.1 # Training sample preview save percentage.
+  scaling: z_scale # Scaling mode. Options: null, min_max, z_scale, log_min_max.
+  data_generator: data_augment_pluggable # Data generator function name. Options: data_augment, data_augment_pluggable.
+  validation_loss_filename: validation_loss_{model_alias_hex}.txt # Filename for per-epoch validation loss log inside training_results_dir.
+  training_metrics_filename: training_metrics_{model_alias_hex}.txt # Filename for end-of-training metrics summary inside training_results_dir.
+  training_metrics_csv_path: "{models_dir}/training_history_{model_alias_hex}.csv" # CSV metrics output path.
+  training_history_json_path: "{models_dir}/training_history_{model_alias_hex}.json" # JSON history output path.
+  checkpoint_filename_pattern: "{prefix}_{epoch}.keras" # Shared checkpoint naming pattern used by save/restore/load helpers.
+  checkpoint_custom_epoch: null # Optional exact checkpoint epoch to restore first.
+  checkpoint_restore_kwargs:
+    filename_pattern: "{prefix}_{epoch}.keras" # Must match checkpoint_filename_pattern.
+  training_results_dir: null # Optional override; default derived from paths.models_dir.
+  patch_size: null # Optional override; default derived from data.ps.
+  data_kwargs: null # Optional override; default derived from data section.
+  network_kwargs: null # Optional override; default derived from network section.
+  discriminator_kwargs: null # Optional override; default derived from discriminator section.
+  gan_kwargs: null # Optional override; default derived from gan section.
+
+mast:
+  mission: hst # MAST mission name.
+  filters:
+    sci_spec_1234: F160W,F160W;*,*;F160W,*;F160W;* # Survey/filter selection.
+    sci_obs_type: image # Observation type filter.
+    sci_aec: S # Observation status filter.
+    sci_instrume: wfc3 # Instrument filter.
+  #main_column: sci_actual_duration # Metadata column used for sorting.
+  #metadata_output: ./hst_wfc3_f160W_metadata.csv # Output CSV path for fetched metadata.
+  #id_column: sci_data_set_name # ID column used to resolve candidate URLs.
+  url_column: drz_URL # Column where resolved URL is written.
+  
+  save_dir: "{data_dir}/originals" # Download destination when download=true.
+  
+  max_requests: 10000 # Max concurrent requests for URL probing/downloading.
+  reset_after: 15 # Recreate HTTP session every N requests.
+  max_workers: 16 # Process worker count for chunked bulk URL resolution.
+  chunk_size: 500 # Dataset IDs per bulk Observations query chunk.
+  resolve_max_retries: 2 # Retries for failed bulk Observations chunk calls.
+  resolve_retry_delay: 2.0 # Base seconds between retries (scaled by attempt).
+  prefer_token: drz # Preferred filename token for URL resolution (e.g. 'drz' to prefer drz_URL when multiple URL columns exist).
+  download: false # If true, download FITS once URL is resolved.
+  fetch_metadata: true # If true, query MAST and write metadata_output.
+  resolve_urls: true # If true, resolve/download URLs into metadata_output.
+  metadata_output: null # Optional override; default derived from paths.metadata_csv.
+  id_column: null # Optional override; default derived from data.dataset.
+  main_column: null # Optional override; default derived from data.exposure_col.
+
+create_dataset:
+  metadata_filepath: null # Optional override; default derived from paths.metadata_csv.
+  survey_column: sci_aper_1234 # Metadata column used for allowed survey filtering.
+  exp_column: null # Optional override; default derived from data.exposure_col.
+  id_column: null # Optional override; default derived from data.dataset.
+  url_column: null # Optional override; default derived from mast.url_column.
+  allowed_survey: [IR, IR-FIX, IR-UVIS-CENTER, IR-UVIS-FIX, GRISM1024, IR-UVIS, G141-REF, G102-REF] # Allowed survey labels.
+  filter_surveys: true
+  filter_by_last_name: false # If true, filter metadata by PI last name (using last_name_filter_value).
+  last_name_filter_value: ['FABER'] 
+  last_name_col: sci_pi_last_name # Column name for PI last names in metadata.
+  
+  file_extension: .fits # FITS filename extension used when scanning directories.
+  split_dirs: null # Optional override; default derived from paths.training_path/eval_path/test_path.
+  originals_subdir: originals # Subdirectory used for original downloaded FITS files.
+  masked_images_dirname: masked_images # Subdirectory used for masked-image outputs.
+  filtered_metadata_output_file: "{data_dir}/filtered_metadata_{data_alias_enriched_hex}.csv" # Filtered metadata output path.
+  noisy_filtered_metadata_output_file: "{data_dir}/metadata_filepath_enriched_with_noise_{data_alias_enriched_hex}.csv" # Enriched metadata output path.
+  cropped_stats_output_file: "{data_dir}/cropped_images_stats_{data_alias_enriched_hex}.csv" # Final cropped-image stats output path.
+  url_filename_split_token: '%2F' # URL token used to extract filename from URL fields.
+  crop_name_separator: _ # Separator used in cropped patch filenames.
+  crop_prefix_parts: 1 # Number of prefix parts to keep when reconstructing original filename.
+  original_filename_suffix: _drz.fits # Suffix appended when mapping crop names to original names.
+  temp_index_column: temp_index # Temporary helper column name used during metadata sampling.
+  max_iterations: 1 # Maximum number of metadata resampling passes after the initial unique-value pass.
+  filename_column: filename # Filename column used for joins.
+  original_filename_column: original_filename # Original-image filename column used for joins.
+  masked_filename_prefix: masked_ # Prefix used when saving masked FITS files.
+  original_stats_prefix: org_ # Prefix added to original-image stats columns after merge.
+  stats_column_map: # Output stat column names emitted by image-stats workers.
+    mean_bkg: mean_bkg
+    median_bkg: median_bkg
+    std_bkg: std_bkg
+    max_bkg: max_bkg
+    mean_src: mean_src
+    median_src: median_src
+    std_src: std_src
+    max_src: max_src
+    abs_mean: abs_mean
+    abs_median: abs_median
+  stats_column_tokens: [mean, median, std, max] # Tokens used to select statistical columns for merge.
+  download: true # Enable metadata filtering, downloading, and cropping.
+  cropping: true # Enable image statistics and metadata enrichment.
+  stats_on_crops: true # Enable statistics for cropped images.
+  save: false # Save masked image outputs.
+  size: 3000 # Desired sampled metadata size.
+  low: 200 # Lower exposure bound.
+  high: 20000 # Upper exposure bound.
+  seed: 42 # Random seed.
+  split: [60, 20, 20] # Train/test/eval split percentages.
+  max_requests: null # Optional override; default derived from mast.max_requests.
+  reset_after: null # Optional override; default derived from mast.reset_after.
+  type_of_image: null # Optional override; default derived from data.type_of_image.
+  sigma: 3 # Sigma clipping threshold.
+  nsigma: 2 # Detection threshold in sigma units.
+  npixels: 8 # Minimum connected pixels for source detection.
+  footprint_radius: 10 # Radius used for source mask footprint.
+  maxiters: 10 # Maximum sigma-clipping iterations.
+  bkg_box_size: 64 # Background2D box size used for local background estimation.
+  exclude_percentile: 15.0 # Background2D threshold for rejecting boxes with too few valid pixels.
+  ps: null # Optional override; default derived from data.ps.
+  dataset_dir: null # Optional override; default derived from paths.data_dir.
+  nan_value: null # Optional override; default derived from data.nan_value.
+  posinf_value: null # Optional override; default derived from data.posinf_value.
+  neginf_value: null # Optional override; default derived from data.neginf_value.
+  location_col: null # Optional override; default derived from data.location_col.
+  max_workers: 16 # ThreadPool worker count.
+  step: 5 # Percentile step for classify_data statistics.
+
+evaluation:
+  all_metrics_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/all_metrics_*.csv"
+  aggregated_metrics_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/aggregated_metrics_*.csv"
+  org_catalog_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/org_catalog_*.csv"
+  noisy_catalog_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/noisy_catalog_*.csv"
+  rec_catalog_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/rec_catalog_*.csv"
+  parallel: true # Parallelise over models (outer loop).
+  parallel_epoch: false # Parallelise over checkpoints (inner loop).
+  total_workers: 36 # Total worker budget shared between outer and inner loops.
+  max_workers: 6 # Outer-loop parallelism (models).
+  frac: 0.20 # Fraction of images for which comparison plots are saved.
+  n: 50 # Argument forwarded to filter_model (e.g. modulo value for get_model_by_modulo).
+  model_prototype: null # Optional override; default derived from training.checkpoint_filename_pattern.
+  type_of_image: null # Optional override; default derived from data.type_of_image.
+  models_dir: null # Optional override; default derived from paths.models_dir.
+  metadata_filepath: null # Optional override; default derived from create_dataset.cropped_stats_output_file.
+  scaling: null # Optional override; default derived from training.scaling.
+  # Sliding-window inference (patch_size and batch_size inherited from training)
+  stride: [64, 64, 1] # Stride (H, W, C) for sliding-window inference.
+  weighting: average # Weight scheme: average, gaussian, or distance.
+  gaussian_sigma: 64 # Sigma for Gaussian weight map (used when weighting=gaussian).
+  use_custom_test_images: false # If true, load test images from data.test_cache_filepath instead of eval_cache_filepath.
+  #test_metadata_filepath: "{models_dir}/sampled_test_{model_alias_hex}.csv" # Path to the metadata file for custom test images.
+  # Preprocessing column names (must match columns produced by the data pipeline)
+  new_exp_time_col: new_exp_time # Column name for the simulated shorter exposure time.
+
+  # Source detection — sigma/maxiters/nsigma/npixels/footprint_radius mirror create_dataset values
+  deblend: false # Enable source deblending (slow; set true only when needed).
+  deblend_timeout: 30 # Seconds before deblending is abandoned and undeblended result used.
+  nlevels: 32 # Number of deblending levels.
+  contrast: 0.001 # Minimum contrast ratio for deblending.
+  distance_threshold: 5 # Pixel radius for source cross-matching.
+
+  # SSIM parameters
+  alpha: 1 # Luminance exponent for SSIM.
+  beta: 1 # Contrast exponent for SSIM.
+  gamma: 1 # Structure exponent for SSIM.
+  k1: 0.01 # SSIM stability constant k1.
+  k2: 0.03 # SSIM stability constant k2.
+  win_size: 11 # Gaussian window width for SSIM.
+  win_sigma: 1.5 # Gaussian window sigma for SSIM.
+
+  # SEP source extraction
+  func: wrap_extract_sources # Source-extraction function: wrap_extract_sources or detect_sources_in_image.
+  thresh: 2.25 # SEP detection threshold (reconstructed/noisy images).
+  org_thresh: 2.0 # SEP detection threshold (original images).
+  radius_factor: 6.0 # Kron-radius multiplier for elliptical aperture photometry.
+  PHOT_FLUXFRAC: 0.5 # Flux fraction for SEP flux-radius calculation.
+  r_min: 1.75 # Minimum circular-aperture radius when Kron radius is small.
+  elongation_fraction: 1.5 # a/b ratio above which a source is classified as a galaxy.
+  PHOT_AUTOPARAMS: 2.5 # Aperture scale factor for SEP elliptical photometry.
+  maskthresh: 0.0 # SEP pixel masking threshold.
+  minarea: 8 # Minimum connected pixels for source extraction (reconstructed/noisy).
+  org_minarea: 6 # Minimum connected pixels for source extraction (original).
+  filter_type: matched # SEP filter type: matched or conv.
+  deblend_nthresh: 32 # Number of deblending thresholds.
+  deblend_cont: 0.005 # Minimum contrast ratio for SEP deblending.
+  clean: true # Perform SEP source cleaning.
+  clean_param: 1.0 # SEP cleaning parameter.
+
+  combined_images_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/combined_images"
+  png_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/pngs"
+  org_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/original_images"
+  noisy_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/noisy_images"
+  rec_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/reconstructed_images"
+  use_mosaic: false
+  patch_size: null # Optional override; default derived from training.patch_size.
+  batch_size: null # Optional override; default derived from training.batch_size.
+  sigma: null # Optional override; default derived from create_dataset.sigma.
+  nsigma: null # Optional override; default derived from create_dataset.nsigma.
+  npixels: null # Optional override; default derived from create_dataset.npixels.
+  footprint_radius: null # Optional override; default derived from create_dataset.footprint_radius.
+  maxiters: null # Optional override; default derived from create_dataset.maxiters.
+  hist_min_exp: null # Optional override; default derived from data.lowest_power.
+  hist_max_exp: null # Optional override; default derived from data.highest_power.
+  uncropped_patch_size: null # Optional override; default derived from training.patch_size.
+  uncropped_stride: null # Optional override; default derived from evaluation.stride.
+  uncropped_weighting: null # Optional override; default derived from evaluation.weighting.
+
+  # patch_size is derived from data.ps in load_config()
+  # batch_size is inherited from training.batch_size in load_config()
+
+  # --- uncropped (Faber) evaluation -----------------------------------------
+  uncropped_use_mosaic: false
+  uncropped_save_images: true 
+  uncropped_output_dir: "{singlemodal_metrics_dir}/{data_alias_enriched_hex}/{model_alias_hex}" # Base output directory for uncropped evaluation results.
+  uncropped_combined_images_dir: "{singlemodal_metrics_dir}/{data_alias_enriched_hex}/{model_alias_hex}/combined_images"
+  uncropped_sampled_data_csv: "{singlemodal_metrics_dir}/{data_alias_enriched_hex}/{model_alias_hex}/sampled_data.csv" # Sampled metadata for Faber evaluation.
+  #uncropped_models_dir: ./models # Base directory containing per-model subdirectories.
+  uncropped_n: 2000 # Maximum number of images to evaluate.
+  # hist_min_exp inherited from data.lowest_power in load_config()
+  # hist_max_exp inherited from data.highest_power in load_config()
+  uncropped_workers: 16 # Worker processes for Faber evaluation.
+  uncropped_results_csv: results_metrics_{model_alias_hex}.csv # Per-crop metrics CSV filename inside uncropped output_dir.
+  uncropped_org_catalog_csv: org_catalog_{model_alias_hex}.csv # Original-source catalog CSV filename inside uncropped output_dir.
+  uncropped_noisy_catalog_csv: noise_catalog_{model_alias_hex}.csv # Noisy-source catalog CSV filename inside uncropped output_dir.
+  uncropped_rec_catalog_csv: rec_catalog_{model_alias_hex}.csv # Reconstructed-source catalog CSV filename inside uncropped output_dir.
+  uncropped_hist_data_csv: hist_data_{model_alias_hex}.csv # Histogram bin counts CSV filename inside uncropped output_dir.
+  uncropped_hist_png_template: hist_{model_alias_hex}_{exp_ratio}.png # Histogram image filename template inside uncropped output_dir.
+  # uncropped_patch_size derived from data.ps in load_config()
+  # uncropped_stride inherited from evaluation.stride in load_config()
+  # uncropped_weighting inherited from evaluation.weighting in load_config()
+  uncropped_batch_size: 1 # Batch size for Faber sliding-window inference.
+
+  photometrical_data_filename: "photometrical_data_{model_alias_hex}.parquet"
+  merge_catalog_workers: 16 # Worker processes for merge_catalogs.py.
+  merge_catalog_threshold: 3.0 # Pixel threshold for nearest-neighbor catalog matching.
+
+
+
+visualization:
+  prepare_images: # Directory that contains all_metrics.csv written by the evaluation pipeline.
+    #model_dir: ./models/z_scale_normal_data_latest/checkpoints # Output directory for composite visualization PNGs.
+    #output_dir: ./final_images_latest # Filenames inside file_dir / data_dir.
+    output_dir: "{plots_dir}/{data_alias_enriched_hex}/{model_alias_hex}/sources" # Output directory for composite visualization PNGs.
+    #dataset_name: sci_data_set_name # Number of images randomly sampled for visualization.
+    sample_n: 100 # Ratio parameters are inherited from data.ratio_initial/count/growth when not set here.
+    ratio_initial: 2 # First geometric ratio for geometric candidates strategy.
+    ratio_count: 8 # Number of geometric ratios.
+    ratio_growth: 1.5 # Geometric growth factor for ratios.
+    metadata_filepath: null # Optional override; default derived from paths.metadata_csv.
+    exp_column: null # Optional override; default derived from data.exposure_col.
+    low: null # Optional override; default derived from data.low.
+    dataset: null # Optional override; default derived from data.dataset.
+    ps: null # Optional override; default derived from data.ps.
+    type_of_image: null # Optional override; default derived from data.type_of_image.
+    scaling: null # Optional override; default derived from training.scaling.
+    model_dir: null # Optional override; default derived from paths.models_dir.
+    model_prototype: null # Optional override; default derived from evaluation.model_prototype.
+    kwargs_source: null # Optional override; default derived from evaluation.kwargs_source.
+    data_kwargs: null # Optional override; default derived from data section.
+    targ_col: sci_targname # Column name for target name in metadata (used in
+
+
+  prepare_plots: # Output directory for all photometric plot PNGs and summary CSVs.
+    output_dir: "{plots_dir}/{data_alias_enriched_hex}/{model_alias_hex}/plots" # Filename of the processed photometric parquet table inside each data_path dir.
+    metadata_filepath: null # Optional override; default derived from create_dataset.cropped_stats_output_file.
+    uncropped_output_dir: null # Optional override; default derived from evaluation.uncropped_output_dir.
+    photometrical_data_filename: null # Optional override; default derived from evaluation.photometrical_data_filename.
+    uncropped_results_csv: null # Optional override; default derived from evaluation.uncropped_results_csv.
+    rec_cmap: viridis # Matplotlib colormap for reconstructed-image panels.
+    noise_cmap: cividis # Matplotlib colormap for noisy-image panels.
+    norm_quantiles: [1, 99] # Lower and upper percentiles used for color normalization.
