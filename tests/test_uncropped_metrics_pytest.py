@@ -22,12 +22,49 @@ def test_log_range_returns_sorted_decade_values():
 
 
 @pytest.mark.unit
-def test_process_data_filters_by_last_name_and_low_threshold(tmp_path: Path, tiny_metadata_df: pd.DataFrame, mocker):
+def test_process_data_filters_by_last_name(tmp_path: Path, tiny_metadata_df: pd.DataFrame, mocker):
     metadata_csv = tmp_path / 'metadata.csv'
     output_csv = tmp_path / 'sampled.csv'
     tiny_metadata_df.to_csv(metadata_csv, index=False)
 
-    def fake_candidates(row, _kwargs_data):
+    def fake_candidates(row, kwargs_data_unused):
+        return [
+            {
+                'name': row['filename'],
+                'new_exp_time': float(row['exp_time']) / 2.0,
+                'exp_ratio': float(row['exp_ratio']),
+            },
+            {
+                'name': row['filename'],
+                'new_exp_time': float(row['exp_time']) * 2.0,
+                'exp_ratio': float(row['exp_ratio']),
+            },
+        ]
+
+    mocker.patch('src.evaluation.uncropped_metrics.candidates_based_on_range', side_effect=fake_candidates)
+
+    kwargs_data = {'low': 0.0}
+    kwargs_eval = {
+        'filter_by_last_name': True,
+        'last_name_col': 'sci_pi_last_name',
+        'last_name_filter_value': ['FABER'],
+    }
+
+    filtered = um.process_data(str(metadata_csv), kwargs_data, kwargs_eval, str(output_csv))
+
+    assert output_csv.exists()
+    assert not filtered.empty
+    expected_rows = tiny_metadata_df[tiny_metadata_df['sci_pi_last_name'] == 'FABER']
+    assert len(filtered) == 2 * len(expected_rows)
+
+
+@pytest.mark.unit
+def test_process_data_applies_low_threshold_after_candidate_expansion(tmp_path: Path, tiny_metadata_df: pd.DataFrame, mocker):
+    metadata_csv = tmp_path / 'metadata.csv'
+    output_csv = tmp_path / 'sampled.csv'
+    tiny_metadata_df.to_csv(metadata_csv, index=False)
+
+    def fake_candidates(row, kwargs_data_unused):
         return [
             {
                 'name': row['filename'],
@@ -45,7 +82,7 @@ def test_process_data_filters_by_last_name_and_low_threshold(tmp_path: Path, tin
 
     kwargs_data = {'low': 150.0}
     kwargs_eval = {
-        'filter_by_last_name': True,
+        'filter_by_last_name': False,
         'last_name_col': 'sci_pi_last_name',
         'last_name_filter_value': ['FABER'],
     }
@@ -55,9 +92,7 @@ def test_process_data_filters_by_last_name_and_low_threshold(tmp_path: Path, tin
     assert output_csv.exists()
     assert not filtered.empty
     assert (filtered['new_exp_time'] >= 150.0).all()
-
-    expected_rows = tiny_metadata_df[tiny_metadata_df['sci_pi_last_name'] == 'FABER']
-    assert len(filtered) == len(expected_rows)
+    assert len(filtered) == len(tiny_metadata_df)
 
 
 @pytest.mark.unit
@@ -93,7 +128,7 @@ def test_main_aggregates_histograms_and_catalog_outputs(tmp_path: Path, mocker):
         def submit(self, fn, *args, **kwargs):
             return _FakeFuture(fn(*args, **kwargs))
 
-    def fake_process_subdf(sub_df, _model_filepath, _output_dir, _kwargs, bins, _save_eval_images):
+    def fake_process_subdf(sub_df, model_filepath_unused, output_dir_unused, kwargs_unused, bins, save_eval_images_unused):
         ratios = sorted(float(v) for v in sub_df['exp_ratio'].unique())
         hists = {
             ratio: [
