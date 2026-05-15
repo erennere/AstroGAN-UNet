@@ -211,6 +211,8 @@ def test_callback_writes_expected_files(tmp_path: Path, tiny_unet, mock_cfg):
 @pytest.mark.integration
 @pytest.mark.slow
 def test_data_augment_pluggable_creates_split_caches_and_info_file(mock_cfg):
+    from src.training import new_train
+
     train_kwargs = dict(mock_cfg['data'])
     train_kwargs['training'] = True
     train_samples = list(islice(data_augment_pluggable([], train_kwargs, scaling=mock_cfg['training']['scaling']), 2))
@@ -237,5 +239,8 @@ def test_data_augment_pluggable_creates_split_caches_and_info_file(mock_cfg):
     assert Path(mock_cfg['data']['test_cache_filepath']).exists()
     assert Path(mock_cfg['data']['info_filepath']).exists()
     assert not info_df.empty
+    assert new_train.MEM_CACHED_TEST is not None
+    assert new_train.MEM_CACHED_EVAL is not None
+    assert not new_train.MEM_CACHED_TEST['location'].equals(new_train.MEM_CACHED_EVAL['location'])
     for frame in (training_cache, eval_cache, test_cache):
         assert (frame['combined_sigma'] > frame['org_sigma']).all()

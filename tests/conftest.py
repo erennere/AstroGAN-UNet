@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import copy
 import sys
+import tempfile
 from uuid import uuid4
 
 import numpy as np
@@ -78,8 +79,7 @@ def tiny_fits_file(tmp_path: Path, tiny_fits_array: np.ndarray) -> Path:
 
 @pytest.fixture
 def tiny_metadata_df(tmp_path_factory: pytest.TempPathFactory, tiny_fits_array: np.ndarray) -> pd.DataFrame:
-    root = Path('/tmp/astrogan_unet_synthetic') / uuid4().hex
-    root.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix=f'astrogan_unet_{uuid4().hex[:8]}_'))
     rows = []
     surveys = ['IR', 'GRISM1024', 'IR-UVIS']
     last_names = ['FABER', 'DOE', 'SMITH']
