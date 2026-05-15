@@ -1,6 +1,7 @@
 """Focused checkpoint round-trip checks for U-Net and GAN models."""
 
 from collections import Counter
+import importlib.util
 from pathlib import Path
 import sys
 import tempfile
@@ -10,14 +11,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
 	sys.path.insert(0, str(REPO_ROOT))
 
-import tensorflow as tf
+TF_AVAILABLE = importlib.util.find_spec('tensorflow') is not None
 
-from starter import load_config
-from src.models.network import GAN, get_discriminator, network
-from src.training.new_train import _instantiate_optimizer
-from src.training.utils import build_checkpoint_custom_objects, load_checkpoint_model, read_checkpoint_info, save_checkpoint_model
+if TF_AVAILABLE:
+	import tensorflow as tf
+
+	from starter import load_config
+	from src.models.network import GAN, get_discriminator, network
+	from src.training.new_train import _instantiate_optimizer
+	from src.training.utils import build_checkpoint_custom_objects, load_checkpoint_model, read_checkpoint_info, save_checkpoint_model
 
 
+@unittest.skipUnless(TF_AVAILABLE, 'TensorFlow is not installed')
 class CheckpointSerializationTests(unittest.TestCase):
 	"""Check that checkpoints keep model state and saved model info."""
 
