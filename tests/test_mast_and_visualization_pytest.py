@@ -1,5 +1,6 @@
 from pathlib import Path
 
+# Use a headless backend so matplotlib figure creation works in CI and local shell environments.
 import matplotlib
 matplotlib.use('Agg')
 import numpy as np
