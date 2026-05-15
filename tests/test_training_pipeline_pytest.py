@@ -234,6 +234,13 @@ def test_data_augment_pluggable_creates_split_caches_and_info_file(mock_cfg):
     assert train_samples
     assert eval_samples
     assert test_samples
+    for sample in (train_samples[0], eval_samples[0], test_samples[0]):
+        noisy, clean, metadata = sample
+        assert noisy.shape == (64, 64, 1)
+        assert clean.shape == (64, 64, 1)
+        assert np.isfinite(noisy).all()
+        assert np.isfinite(clean).all()
+        assert metadata
     assert Path(mock_cfg['data']['training_cache_filepath']).exists()
     assert Path(mock_cfg['data']['eval_cache_filepath']).exists()
     assert Path(mock_cfg['data']['test_cache_filepath']).exists()
