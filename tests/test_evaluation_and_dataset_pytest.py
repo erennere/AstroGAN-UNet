@@ -41,10 +41,13 @@ def test_merge_based_on_proximity_preserves_rec_rows_and_suffixes(tiny_catalog_d
     org_df['image_id'] = 'img-1'
 
     merged = merge_based_on_proximity(rec_df, noise_df, org_df, threshold=0.0)
+    matched = merged.iloc[:len(rec_df)]
 
     assert len(merged) >= len(rec_df)
     assert {'x_rec', 'y_rec', 'flux_rec', 'x_noise', 'flux_noise', 'x_org', 'flux_org'} <= set(merged.columns)
     assert merged['image_id'].eq('img-1').all()
+    assert np.allclose(matched['x_rec'], matched['x_org'])
+    assert np.allclose(matched['y_rec'], matched['y_org'])
 
 
 @pytest.mark.unit

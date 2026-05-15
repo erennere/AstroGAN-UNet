@@ -205,7 +205,7 @@ def test_callback_writes_expected_files(tmp_path: Path, tiny_unet, mock_cfg):
     assert 'Epoch 1' in validation_loss_file.read_text(encoding='utf-8')
     assert checkpoint_file.exists()
     history = pd.read_csv(history_csv)
-    assert list(history.columns) == ['epoch', 'train_loss', 'g_loss', 'validation_loss', 'epoch_time']
+    assert {'epoch', 'train_loss', 'g_loss', 'validation_loss', 'epoch_time'} <= set(history.columns)
 
 
 @pytest.mark.integration

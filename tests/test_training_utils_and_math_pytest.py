@@ -16,6 +16,11 @@ from src.training.math_helpers import (
 from src.training.utils import log_cosh_loss, scale_invariant_mae, ssim_loss
 
 
+def _normalized_residual_stat(y_true, y_pred, reducer):
+    dynamic_range = tf.reduce_max(y_true) - tf.reduce_min(y_true) + 1e-10
+    return float(reducer(y_pred - y_true) / dynamic_range)
+
+
 @pytest.mark.unit
 def test_scale_invariant_mae_properties():
     y_true = tf.reshape(tf.linspace(0.0, 10.0, 64 * 64), (1, 64, 64, 1))
@@ -37,8 +42,8 @@ def test_log_cosh_loss_properties():
     large_pred = y_true + 4.0
     small_loss = float(log_cosh_loss(y_true, small_pred))
     large_loss = float(log_cosh_loss(y_true, large_pred))
-    normalized_mse = float(tf.reduce_mean(tf.square(small_pred - y_true)) / (tf.reduce_max(y_true) - tf.reduce_min(y_true) + 1e-10))
-    normalized_mae = float(tf.reduce_mean(tf.abs(large_pred - y_true)) / (tf.reduce_max(y_true) - tf.reduce_min(y_true) + 1e-10))
+    normalized_mse = _normalized_residual_stat(y_true, small_pred, lambda residual: tf.reduce_mean(tf.square(residual)))
+    normalized_mae = _normalized_residual_stat(y_true, large_pred, lambda residual: tf.reduce_mean(tf.abs(residual)))
 
     assert log_cosh_loss(y_true, y_true).shape == ()
     assert float(log_cosh_loss(y_true, y_true)) == pytest.approx(0.0, abs=1e-7)
