@@ -1,4 +1,4 @@
-# Test Prompt: coverage-guided follow-up
+# Test Prompt: rigorous coverage follow-up
 
 ## Observed coverage already present
 
@@ -12,23 +12,49 @@ The current suite already covers the main training/evaluation path with syntheti
 - `src/evaluation/metrics.py` + `src/evaluation/merge_catalogs.py`: sliding-window inference, source detection chain, catalog merge behavior
 - integration flows for callback outputs, data augmentation caches, U-Net/GAN single-step training, and parquet round-trips
 
-## Under-tested or untested areas discovered
+## Prioritized issues: high to low
 
-The following modules still contain logic with little or no direct coverage:
+### 1. Critical: scaling inversion and core filesystem/runtime helpers
 
-1. `src/data/mast.py`
+These paths can silently corrupt outputs or fail at runtime across many workflows.
+
+- `src/training/math_helpers.py`
+  - `inverse_min_max_normalization`
+  - `inverse_zscore_normalization`
+  - `inverse_adaptive_log_transform_and_denormalize`
+
+- `src/training/utils.py`
+  - `_normalize_runtime_filepath`
+  - `ensure_directory_exists`
+  - `is_not_nan`
+  - `open_fits` ratio / bounds / EXPTIME edge cases
+
+### 2. High: distribution and numeric helper behavior
+
+- `src/training/math_helpers.py`
+  - `linear_function`
+  - `power_law`
+  - `evenly_spaced_numbers`
+  - `find_distribution`
+  - `find_distribution_only_exp`
+
+### 3. High: MAST and visualization helper logic
+
+- `src/data/mast.py`
    - `_chunked`
    - `_choose_best_product`
    - `merge_products_with_metadata`
    - bulk-resolution retry/merge logic
 
-2. `src/visualization/prepare_images.py`
+- `src/visualization/prepare_images.py`
    - `build_composite_axes`
    - `plot_source_comparison_sep`
    - `coordinate_detect_source`
    - composite plotting/filtering helpers
 
-3. `src/evaluation/uncropped_metrics.py`
+### 4. Medium: uncropped evaluation aggregation
+
+- `src/evaluation/uncropped_metrics.py`
    - `log_range`
    - `process_data`
    - CSV/histogram aggregation logic in `main`
@@ -40,19 +66,27 @@ The following modules still contain logic with little or no direct coverage:
 - mock network/process-boundary behavior with `pytest-mock`
 - keep tests CPU-only and fast
 - avoid duplicating checkpoint serialization tests
+- prefer randomized synthetic arrays/DataFrames with deterministic seeds
 
 ## Immediate next testing task
 
-Add a focused pytest module that covers pure helper logic in:
+Add focused pytest coverage for the highest-priority gaps first:
 
-- `src/data/mast.py`
-  - chunk splitting
-  - best-product selection policy
-  - metadata URL merge behavior while preserving existing URLs
+- `src/training/math_helpers.py`
+  - randomized round-trip tests for all inverse scaling helpers
+  - distribution helper invariants across random log-spaced data
+  - spacing/math helper properties
 
-- `src/visualization/prepare_images.py`
-  - composite axes construction
-  - ellipse grouping for matched/unmatched detections
-  - filtering behavior in `coordinate_detect_source`
+- `src/training/utils.py`
+  - runtime path normalization
+  - directory creation behavior
+  - numeric validation behavior
+  - FITS ratio/bounds/error handling
+  - checkpoint filename / checkpoint-info edge cases
 
-After that, run `python -m pytest --tb=short -q` and fix any failures.
+Then continue with:
+
+- `src/evaluation/uncropped_metrics.py`
+  - isolate pure helpers and aggregation paths with mocks
+
+After each wave, run `python -m pytest --tb=short -q` and fix any failures.
