@@ -1,6 +1,6 @@
-# astroUnets
+# AstroGAN-UNet
 
-astroUnets is a TensorFlow/Keras astronomy pipeline for building denoising models on FITS images, evaluating reconstruction quality with source-extraction metrics, merging photometric catalogs, and generating final qualitative and quantitative visualizations.
+AstroGAN-UNet is a TensorFlow/Keras astronomy pipeline for building denoising models on FITS images, evaluating reconstruction quality with source-extraction metrics, merging photometric catalogs, and generating final qualitative and quantitative visualizations.
 
 The active pipeline is implemented under `src/`. The `legacy/` directory contains older standalone scripts that are not part of the current `src/` execution path and should be treated as historical utilities.
 
@@ -46,7 +46,7 @@ The configuration contract is centered on `config.yaml` and `starter.py`.
 
 ### Runtime Dependencies
 
-The repository ships an `environment.yml` file that defines a conda environment named `astro-unets` with Python 3.11 and the active scientific stack.
+The repository ships an `environment.yml` file that defines a conda environment named `astro-gan-unet` with Python 3.11 and the active scientific stack.
 
 | Category | Packages explicitly present in `environment.yml` |
 | --- | --- |

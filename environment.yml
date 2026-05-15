@@ -1,4 +1,4 @@
-name: astro-unets
+name: astro-gan-unet
 channels:
   - conda-forge
   - defaults

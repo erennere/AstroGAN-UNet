@@ -1,4 +1,4 @@
-"""Main training entrypoint and dataset/model wiring for astroUnets."""
+"""Main training entrypoint and dataset/model wiring for AstroGAN-UNet."""
 
 import os, logging, json, sys, inspect
 import random

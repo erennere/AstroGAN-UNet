@@ -1,2 +1,2 @@
-"""astroUnets source package."""
+"""AstroGAN-UNet source package."""
 

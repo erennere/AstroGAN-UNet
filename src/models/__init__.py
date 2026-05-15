@@ -1,2 +1,2 @@
-"""Model architectures used by astroUnets."""
+"""Model architectures used by AstroGAN-UNet."""
 
