@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from pathlib import Path
 import copy
+import sys
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
 import pytest
 import tensorflow as tf
 from astropy.io import fits
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from starter import load_config
 from src.models.network import GAN, get_discriminator, network
@@ -72,7 +78,8 @@ def tiny_fits_file(tmp_path: Path, tiny_fits_array: np.ndarray) -> Path:
 
 @pytest.fixture
 def tiny_metadata_df(tmp_path_factory: pytest.TempPathFactory, tiny_fits_array: np.ndarray) -> pd.DataFrame:
-    root = tmp_path_factory.mktemp('synthetic_metadata')
+    root = Path('/tmp/astrogan_unet_synthetic') / uuid4().hex
+    root.mkdir(parents=True, exist_ok=True)
     rows = []
     surveys = ['IR', 'GRISM1024', 'IR-UVIS']
     last_names = ['FABER', 'DOE', 'SMITH']

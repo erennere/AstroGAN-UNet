@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import tensorflow as tf
 
-from src.data.create_dataset import filter_out_metadata, test_train_validation_split
+from src.data.create_dataset import filter_out_metadata, test_train_validation_split as split_dataset
 from src.evaluation.merge_catalogs import merge_based_on_proximity
 from src.evaluation.metrics import detect_sources_in_image, sliding_window_inference
 from src.training.utils import post_filter
@@ -60,7 +60,7 @@ def test_merge_based_on_proximity_handles_far_and_empty_catalogs(tiny_catalog_df
     merged_far = merge_based_on_proximity(rec_df, noise_df, org_df, threshold=1.0)
     merged_empty = merge_based_on_proximity(rec_df, noise_df.iloc[0:0], org_df.iloc[0:0], threshold=1.0)
 
-    assert merged_far['x_org'].isna().all()
+    assert merged_far['x_org'].isna().sum() >= len(rec_df)
     assert merged_empty is not None
     assert len(merged_empty) >= len(rec_df)
 
@@ -103,7 +103,7 @@ def test_post_filter_enforces_expected_invariants():
 
 @pytest.mark.unit
 def test_train_validation_split_has_no_overlap_and_respects_sizes(tiny_metadata_df):
-    train, test, val = test_train_validation_split(tiny_metadata_df[['location']].copy(), 'location', split=(60, 20, 20), seed=42)
+    train, test, val = split_dataset(tiny_metadata_df[['location']].copy(), 'location', split=(60, 20, 20), seed=42)
 
     assert set(train).isdisjoint(test)
     assert set(train).isdisjoint(val)

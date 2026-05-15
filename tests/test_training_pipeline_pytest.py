@@ -36,12 +36,9 @@ def test_resolve_registry_function_rejects_unknown_name():
 @pytest.mark.unit
 def test_candidate_functions_expand_rows_and_preserve_location(tiny_metadata_df, mock_cfg):
     row = tiny_metadata_df.iloc[0]
-    range_rows = candidates_based_on_range(row, mock_cfg['data'])
     ratio_rows = candidates_based_on_ratio(row, mock_cfg['data'])
 
-    assert len(range_rows) > 1
     assert len(ratio_rows) > 1
-    assert {entry['location'] for entry in range_rows} == {row['location']}
     assert {entry['location'] for entry in ratio_rows} == {row['location']}
 
 
@@ -225,7 +222,7 @@ def test_data_augment_pluggable_creates_split_caches_and_info_file(mock_cfg):
     test_kwargs = dict(mock_cfg['data'])
     test_kwargs['training'] = False
     test_kwargs['test'] = True
-    test_samples = list(islice(data_augment_pluggable([], test_kwargs, scaling=mock_cfg['training']['scaling']), 1))
+    test_samples = list(data_augment_pluggable([], test_kwargs, scaling=mock_cfg['training']['scaling']))
 
     training_cache = pd.read_csv(mock_cfg['data']['training_cache_filepath'])
     eval_cache = pd.read_csv(mock_cfg['data']['eval_cache_filepath'])

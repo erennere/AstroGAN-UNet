@@ -523,7 +523,7 @@ def data_augment_pluggable(images, kwargs_data, scaling=None):
         elif training and MEM_CACHED is not None:
             logging.info('data_augment_pluggable: using cached training metadata (%d rows).', len(MEM_CACHED))
             sampled_data = MEM_CACHED
-        elif not training and MEM_CACHED_EVAL is not None:
+        elif not training and not test and MEM_CACHED_EVAL is not None:
             logging.info('data_augment_pluggable: using cached eval metadata (%d rows).', len(MEM_CACHED_EVAL))
             sampled_data = MEM_CACHED_EVAL
 
