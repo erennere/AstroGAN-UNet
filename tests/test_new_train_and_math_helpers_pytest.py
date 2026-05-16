@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +15,9 @@ if str(REPO_ROOT) not in sys.path:
 from src.training.math_helpers import create_simulated_image_gaussian
 from src.training.new_train import (
     black_level,
+    data_augment,
     poisson_noise_with_extra_components,
+    prepare_data,
     prepare_patch_pair,
 )
 
@@ -175,6 +178,157 @@ def test_prepare_patch_pair_returns_none_when_func_raises():
     result = prepare_patch_pair(patch, failing_func, {})
     assert result is None
 
+
+# ---------------------------------------------------------------------------
+# data_augment
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_data_augment_raises_when_start_gte_stop():
+    kwargs_data = {
+        'start': 3,
+        'stop': 3,
+        'ps': 16,
+        'steps': 1,
+        'type_of_image': 'SCI',
+        'low': 0.0,
+        'high': 1e9,
+    }
+    with pytest.raises(ValueError):
+        next(data_augment(['dummy.fits'], kwargs_data))
+
+
+@pytest.mark.unit
+def test_data_augment_skips_invalid_rows_and_yields_valid_sample(monkeypatch: pytest.MonkeyPatch):
+    import src.training.new_train as new_train_mod
+
+    rng = np.random.default_rng(20260516)
+    image = rng.uniform(0.1, 2.0, size=(32, 32)).astype(np.float32)
+    yield_patch = rng.uniform(0.1, 2.0, size=(16, 16, 1)).astype(np.float32)
+    yield_noisy = rng.uniform(0.1, 2.0, size=(16, 16, 1)).astype(np.float32)
+
+    monkeypatch.setattr(new_train_mod.random, 'shuffle', lambda items: None)
+
+    def _fake_open_fits(filepath, ratio, type_of_image, low, high):
+        if filepath == 'invalid.fits':
+            return None
+        if filepath == 'boom.fits':
+            raise RuntimeError('broken file read')
+        return image, 120.0, float(ratio)
+
+    def _fake_black_level(height, width, image_data, ps, steps):
+        return image_data[:ps, :ps]
+
+    def _fake_prepare_patch_pair(gt_patch, func, kwargs_data):
+        if kwargs_data['ratio'] == 2:
+            return None
+        return yield_patch, yield_noisy
+
+    monkeypatch.setattr(new_train_mod, 'open_fits', _fake_open_fits)
+    monkeypatch.setattr(new_train_mod, 'black_level', _fake_black_level)
+    monkeypatch.setattr(new_train_mod, 'prepare_patch_pair', _fake_prepare_patch_pair)
+
+    kwargs_data = {
+        'start': 1,
+        'stop': 3,
+        'ps': 16,
+        'steps': 2,
+        'type_of_image': 'SCI',
+        'low': 0.0,
+        'high': 1e6,
+        'ron': 3,
+        'dk': 7,
+    }
+    images = ['invalid.fits', 'boom.fits', 'ok.fits']
+
+    results = list(data_augment(images, kwargs_data))
+    assert len(results) == 1
+    in_patch, gt_patch, metadata = results[0]
+    assert in_patch.shape == (16, 16, 1)
+    assert gt_patch.shape == (16, 16, 1)
+    assert metadata == ['ok.fits']
+
+
+# ---------------------------------------------------------------------------
+# prepare_data
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_prepare_data_requires_strategy_functions():
+    sampled_data = pd.DataFrame({'location': ['a.fits'], 'token': ['x']})
+    with pytest.raises(ValueError, match='Missing required strategy functions'):
+        list(
+            prepare_data(
+                sampled_data=sampled_data,
+                fit_data=None,
+                training=True,
+                sigma_kernel_fn=None,
+                noise_fn=lambda *_args, **_kwargs: None,
+                stats_name_fn=lambda *_args, **_kwargs: 'stats',
+                type_of_image='SCI',
+                preprocess_nan_value=0.0,
+                preprocess_posinf_value=0.0,
+                preprocess_neginf_value=0.0,
+                sigma_key='combined_sigma',
+                scaling=None,
+                info_cached_df=None,
+                max_workers=1,
+            )
+        )
+
+
+@pytest.mark.unit
+def test_prepare_data_uses_info_cached_retry_pool_when_initial_rows_fail(monkeypatch: pytest.MonkeyPatch):
+    import src.training.new_train as new_train_mod
+
+    sampled_data = pd.DataFrame({'location': ['bad.fits'], 'token': ['a']})
+    retry_pool = pd.DataFrame({'location': ['good.fits'], 'token': ['b']})
+    rng = np.random.default_rng(9090)
+    clean = rng.uniform(1.0, 10.0, size=(8, 8)).astype(np.float32)
+
+    def _fake_open_fits(filepath, type_of_image='SCI'):
+        return None if filepath == 'bad.fits' else clean
+
+    def _fake_scaling(simulated_image, clean_image, scaling, stats_name):
+        return simulated_image, clean_image, stats_name
+
+    monkeypatch.setattr(new_train_mod, 'open_fits', _fake_open_fits)
+    monkeypatch.setattr(new_train_mod, 'apply_scaling_and_stats', _fake_scaling)
+    monkeypatch.setattr(new_train_mod.random, 'choice', lambda indices: indices[0])
+
+    def _sigma_kernel_fn(_row, _fit_data, _sigma_key):
+        return 1.25
+
+    def _noise_fn(clean_image, _row, sigma_kernel):
+        return clean_image + sigma_kernel
+
+    def _stats_name_fn(filepath, row, sigma_alias):
+        return f'{Path(filepath).name}_{row.token}_{sigma_alias}'
+
+    generated = list(
+        prepare_data(
+            sampled_data=sampled_data,
+            fit_data=None,
+            training=False,
+            sigma_kernel_fn=_sigma_kernel_fn,
+            noise_fn=_noise_fn,
+            stats_name_fn=_stats_name_fn,
+            type_of_image='SCI',
+            preprocess_nan_value=0.0,
+            preprocess_posinf_value=0.0,
+            preprocess_neginf_value=0.0,
+            sigma_key='combined_sigma',
+            scaling='min_max',
+            info_cached_df=retry_pool,
+            max_workers=1,
+        )
+    )
+
+    assert len(generated) == 1
+    noisy_image, clean_image, stats = generated[0]
+    assert noisy_image.shape == (8, 8, 1)
+    assert clean_image.shape == (8, 8, 1)
+    assert stats.startswith('good.fits_b_')
 
 # ---------------------------------------------------------------------------
 # extract_filename_from_url / build_original_filename_from_crop
