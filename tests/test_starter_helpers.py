@@ -207,6 +207,7 @@ class StarterHelperTests(unittest.TestCase):
         self.assertEqual(formatted, "models/demo/{missing}/007/'x'")
 
     def test_normalize_paths_formats_recursively_and_absolutizes_path_like_values(self):
+        import os
         normalized = _normalize_paths(
             {
                 'root': './outputs/{run}',
@@ -215,8 +216,13 @@ class StarterHelperTests(unittest.TestCase):
             {'run': 'trial'},
         )
 
-        self.assertTrue(normalized['root'].endswith('/outputs/trial'))
-        self.assertTrue(normalized['nested'][0].endswith('/artifacts/trial'))
+        # Use os.path.join to make the test cross-platform
+        expected_root_ending = os.path.join('outputs', 'trial')
+        expected_nested_0_ending = os.path.join('artifacts', 'trial')
+        self.assertTrue(normalized['root'].endswith(expected_root_ending) or 
+                       normalized['root'].replace('\\', '/').endswith('outputs/trial'))
+        self.assertTrue(normalized['nested'][0].endswith(expected_nested_0_ending) or 
+                       normalized['nested'][0].replace('\\', '/').endswith('artifacts/trial'))
         self.assertEqual(normalized['nested'][1], 'trial')
         self.assertEqual(normalized['nested'][2], 3)
 
