@@ -278,6 +278,54 @@ def test_prepare_data_requires_strategy_functions():
 
 
 @pytest.mark.unit
+def test_prepare_data_returns_nothing_without_location_column():
+    sampled_data = pd.DataFrame({'token': ['x']})
+    result = list(
+        prepare_data(
+            sampled_data=sampled_data,
+            fit_data=None,
+            training=True,
+            sigma_kernel_fn=lambda *_args, **_kwargs: 1.0,
+            noise_fn=lambda clean, _row, _sigma: clean,
+            stats_name_fn=lambda *_args, **_kwargs: 'stats',
+            type_of_image='SCI',
+            preprocess_nan_value=0.0,
+            preprocess_posinf_value=0.0,
+            preprocess_neginf_value=0.0,
+            sigma_key='combined_sigma',
+            scaling=None,
+            info_cached_df=None,
+            max_workers=1,
+        )
+    )
+    assert result == []
+
+
+@pytest.mark.unit
+def test_prepare_data_returns_nothing_for_empty_dataframe():
+    sampled_data = pd.DataFrame({'location': [], 'token': []})
+    result = list(
+        prepare_data(
+            sampled_data=sampled_data,
+            fit_data=None,
+            training=False,
+            sigma_kernel_fn=lambda *_args, **_kwargs: 1.0,
+            noise_fn=lambda clean, _row, _sigma: clean,
+            stats_name_fn=lambda *_args, **_kwargs: 'stats',
+            type_of_image='SCI',
+            preprocess_nan_value=0.0,
+            preprocess_posinf_value=0.0,
+            preprocess_neginf_value=0.0,
+            sigma_key='combined_sigma',
+            scaling='min_max',
+            info_cached_df=None,
+            max_workers=1,
+        )
+    )
+    assert result == []
+
+
+@pytest.mark.unit
 def test_prepare_data_uses_info_cached_retry_pool_when_initial_rows_fail(monkeypatch: pytest.MonkeyPatch):
     import src.training.new_train as new_train_mod
 
