@@ -13,12 +13,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.training.utils import (
+    _augment_samples_based_on_range,
+    _augment_samples_based_on_ratio,
     candidates_based_on_range,
     candidates_based_on_ratio,
     ensure_parent_dir_exists,
     filtering_df,
     filtering_df_v2,
     is_relevant_crop,
+    load_model,
 )
 
 
@@ -257,3 +260,113 @@ def test_candidates_based_on_ratio_returns_empty_for_nan_sigma():
     kwargs = _make_kwargs_ratio()
     result = candidates_based_on_ratio(row, kwargs)
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# checkpoint loading orchestration + augmentation helpers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_augment_samples_based_on_ratio_handles_positive_and_non_positive_ratios():
+    rng = np.random.default_rng(77)
+    exposure = float(rng.uniform(10.0, 800.0))
+    sigma = float(rng.uniform(0.1, 10.0))
+
+    simulated_sigma, simulated_exposure = _augment_samples_based_on_ratio(exposure, sigma, 2.5)
+    assert simulated_exposure == pytest.approx(exposure / 2.5)
+    assert simulated_sigma == pytest.approx(np.sqrt(2.5) * sigma)
+
+    assert _augment_samples_based_on_ratio(exposure, sigma, 0.0) == (0.0, 0.0)
+    assert _augment_samples_based_on_ratio(exposure, sigma, -1.0) == (0.0, 0.0)
+
+
+@pytest.mark.unit
+def test_augment_samples_based_on_range_respects_bounds_and_handles_invalid_sigma():
+    rng = np.random.default_rng(78)
+    sigma = float(rng.uniform(2.0, 9.0))
+    candidates = _augment_samples_based_on_range(sigma, lowest_power=-1, highest_power=1, n_samples_per_magnitude=3)
+
+    assert candidates
+    for sigma_value, base, original_exponent, exponent_diff in candidates:
+        assert sigma_value == pytest.approx(base * 10.0 ** (original_exponent + exponent_diff))
+        assert -1 <= original_exponent + exponent_diff <= 1
+
+    assert _augment_samples_based_on_range(0.0, lowest_power=-2, highest_power=2, n_samples_per_magnitude=4) == []
+    assert _augment_samples_based_on_range(np.nan, lowest_power=-2, highest_power=2, n_samples_per_magnitude=4) == []
+
+
+@pytest.mark.unit
+def test_load_model_raises_when_best_and_last_requested_together(tmp_path: Path):
+    with pytest.raises(ValueError):
+        load_model(
+            str(tmp_path),
+            start_from_best=True,
+            start_from_last=True,
+            custom_epoch=None,
+            restore_kwargs={'filename_pattern': '{prefix}_{epoch:03d}.keras'},
+        )
+
+
+@pytest.mark.unit
+def test_load_model_tries_custom_epoch_best_before_regular(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    checkpoint_dir = tmp_path / 'checkpoints'
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / 'best_model_005.keras').write_text('x', encoding='utf-8')
+    (checkpoint_dir / 'model_005.keras').write_text('x', encoding='utf-8')
+
+    import src.training.utils as utils_mod
+
+    calls = []
+
+    def _fake_restore_model(checkpoint_dir_arg, checkpoint_prefix, epoch, filename_pattern, loader_kwargs):
+        calls.append((checkpoint_prefix, epoch, filename_pattern, loader_kwargs))
+        if checkpoint_prefix == 'best_model' and epoch == 5:
+            return 'best-model', 5
+        return None
+
+    monkeypatch.setattr(utils_mod, 'restore_model', _fake_restore_model)
+
+    restored_model, restored_epoch = load_model(
+        str(checkpoint_dir),
+        start_from_best=True,
+        start_from_last=False,
+        custom_epoch=5,
+        restore_kwargs={'filename_pattern': '{prefix}_{epoch:03d}.keras', 'compile': False},
+    )
+
+    assert restored_model == 'best-model'
+    assert restored_epoch == 5
+    assert calls[0] == ('best_model', 5, '{prefix}_{epoch:03d}.keras', {'compile': False})
+
+
+@pytest.mark.unit
+def test_load_model_falls_back_to_regular_checkpoint_when_best_restore_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    checkpoint_dir = tmp_path / 'checkpoints'
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / 'best_model_003.keras').write_text('x', encoding='utf-8')
+    (checkpoint_dir / 'model_003.keras').write_text('x', encoding='utf-8')
+
+    import src.training.utils as utils_mod
+
+    calls = []
+
+    def _fake_restore_model(checkpoint_dir_arg, checkpoint_prefix, epoch, filename_pattern, loader_kwargs):
+        calls.append((checkpoint_prefix, epoch))
+        if checkpoint_prefix == 'model':
+            return 'regular-model', epoch
+        return None
+
+    monkeypatch.setattr(utils_mod, 'restore_model', _fake_restore_model)
+
+    restored_model, restored_epoch = load_model(
+        str(checkpoint_dir),
+        start_from_best=True,
+        start_from_last=False,
+        custom_epoch=None,
+        restore_kwargs={'filename_pattern': '{prefix}_{epoch:03d}.keras'},
+    )
+
+    assert restored_model == 'regular-model'
+    assert restored_epoch == 3
+    assert calls == [('best_model', 3), ('model', 3)]
