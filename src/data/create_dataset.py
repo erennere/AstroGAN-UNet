@@ -583,6 +583,7 @@ def extract_filename_from_url(url, url_filename_split_token):
     basename = url.split(url_filename_split_token)[-1]
     if basename == url:
         return os.path.basename(url)
+    return basename
 
 def build_original_filename_from_crop(filename, crop_name_separator, crop_prefix_parts, original_filename_suffix):
     """Map a cropped filename back to its original FITS filename using configurable naming rules."""

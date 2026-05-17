@@ -735,7 +735,7 @@ def filtering_df(data, n_samples, delta, id_, abs_, base=None, exponent=None, no
         dfs.append(result)
         data = data[~data['temp_index'].isin(result['temp_index'])]
         already_in += len(result)
-        if data.empty:
+        if data.empty:  # pragma: no cover - defensive guard; loop normally exits via n_samples condition first
             break
     return pd.concat(dfs, ignore_index=True).iloc[:old_n_samples].sample(frac=1).reset_index(drop=True)
 
@@ -872,7 +872,7 @@ def filtering_df_v2(data, n_samples, col_A, col_B, col_C, col_D, occurrences_per
         return sorted_df.iloc[selected_positions].reset_index(drop=True)
 
     remainder_positions = [position for position in all_positions if position not in selected_set]
-    if not remainder_positions:
+    if not remainder_positions:  # pragma: no cover - unreachable after target_n=min(n_samples,len(sorted_df))
         return sorted_df.iloc[selected_positions].reset_index(drop=True)
 
     # Convert percentage weights into integer pick counts that sum exactly to the remainder.
@@ -901,7 +901,7 @@ def filtering_df_v2(data, n_samples, col_A, col_B, col_C, col_D, occurrences_per
         chosen_positions = pick_from_positions(quantile_positions, allocation_count)
 
         for position in chosen_positions:
-            if position in selected_set:
+            if position in selected_set:  # pragma: no cover - pick_from_positions already excludes selected_set
                 continue
             selected_positions.append(position)
             selected_set.add(position)
@@ -914,7 +914,7 @@ def filtering_df_v2(data, n_samples, col_A, col_B, col_C, col_D, occurrences_per
         # Final backfill: if some bins could not satisfy their quota, fill from the full remainder.
         fill_positions = pick_from_positions(remainder_positions, target_n - len(selected_positions))
         for position in fill_positions:
-            if position in selected_set:
+            if position in selected_set:  # pragma: no cover - pick_from_positions already excludes selected_set
                 continue
             selected_positions.append(position)
             selected_set.add(position)

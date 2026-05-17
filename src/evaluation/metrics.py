@@ -993,7 +993,7 @@ def extract_sources(image, image_flag, kwargs):
     # Subtract background using SEP
     image = image.astype(image.dtype.newbyteorder('='))  # Converts to the native byte order
     bkg = sep.Background(image)
-    data_sub = image - bkg
+    data_sub = np.ascontiguousarray(image - bkg).copy()
 
     objects = sep.extract(data_sub, thresh, err=bkg.rms(), maskthresh=maskthresh, minarea=minarea, 
                           filter_type=filter_type, deblend_nthresh=deblend_nthresh, deblend_cont=deblend_cont, 
@@ -1001,31 +1001,36 @@ def extract_sources(image, image_flag, kwargs):
     
     objects = pd.DataFrame(objects)
     objects['index'] = range(len(objects))
+    x = objects['x'].to_numpy(dtype=float, copy=True)
+    y = objects['y'].to_numpy(dtype=float, copy=True)
+    a = objects['a'].to_numpy(dtype=float, copy=True)
+    b = objects['b'].to_numpy(dtype=float, copy=True)
+    theta = objects['theta'].to_numpy(dtype=float, copy=True)
 
     rms_map = bkg.rms()
 
     # Calculate Kron radius
-    kronrad, krflag = sep.kron_radius(data_sub, objects['x'], objects['y'], objects['a'], objects['b'], objects['theta'], radius_factor)
+    kronrad, krflag = sep.kron_radius(data_sub, x, y, a, b, theta, radius_factor)
     
     # Calculate flux using elliptical aperture
-    flux, fluxerr, phot_flag = sep.sum_ellipse(data_sub, objects['x'], objects['y'], objects['a'], objects['b'], objects['theta'],
+    flux, fluxerr, phot_flag = sep.sum_ellipse(data_sub, x, y, a, b, theta,
                                                PHOT_AUTOPARAMS*kronrad, subpix=1, err=rms_map)
     phot_flag |= krflag
 
     # Use circular aperture if Kron radius is small
-    use_circle = kronrad * np.sqrt(objects['a'] * objects['b']) < r_min
-    cflux, cfluxerr, cflag = sep.sum_circle(data_sub, objects['x'][use_circle], objects['y'][use_circle], r_min, subpix=1, err=rms_map)
+    use_circle = kronrad * np.sqrt(a * b) < r_min
+    cflux, cfluxerr, cflag = sep.sum_circle(data_sub, x[use_circle], y[use_circle], r_min, subpix=1, err=rms_map)
     flux[use_circle] = cflux
     fluxerr[use_circle] = cfluxerr
     phot_flag[use_circle] = cflag
 
     # Compute flux radius
-    r, rflag = sep.flux_radius(data_sub, objects['x'], objects['y'], radius_factor*objects['a'], PHOT_FLUXFRAC, normflux=flux, subpix=5)
+    r, rflag = sep.flux_radius(data_sub, x, y, radius_factor * a, PHOT_FLUXFRAC, normflux=flux, subpix=5)
     phot_flag |= rflag
     
     # Create mask
     mask = np.zeros(data_sub.shape, dtype=bool)
-    sep.mask_ellipse(mask, objects['x'], objects['y'], objects['a'], objects['b'], objects['theta'], r=3.)
+    sep.mask_ellipse(mask, x, y, a, b, theta, r=3.)
 
     # Prepare results
     results = pd.DataFrame({

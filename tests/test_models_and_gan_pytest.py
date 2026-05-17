@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
-from src.models.network import GAN, conv_block, get_discriminator, network, upsample_and_concat
+from src.models.network import GAN, _apply_activation, conv_block, get_discriminator, network, upsample_and_concat
 from src.training.utils import log_cosh_loss, scale_invariant_mae, ssim_loss
 
 
@@ -148,3 +148,90 @@ def test_gan_compile_accepts_supported_reconstruction_losses(tiny_unet, tiny_dis
     )
 
     model.compile()
+
+
+@pytest.mark.unit
+def test_apply_activation_dispatcher_branches_and_invalid_spec():
+    x = tf.keras.Input(shape=(4, 4, 1))
+
+    y_str = _apply_activation(x, 'relu')
+    assert y_str.shape == x.shape
+
+    y_layer = _apply_activation(x, tf.keras.layers.ReLU())
+    assert y_layer.shape == x.shape
+
+    y_layer_type = _apply_activation(x, tf.keras.layers.LeakyReLU, {'negative_slope': 0.1})
+    assert y_layer_type.shape == x.shape
+
+    y_callable = _apply_activation(x, tf.nn.relu)
+    assert y_callable.shape == x.shape
+
+    with pytest.raises(TypeError):
+        _apply_activation(x, 123)
+
+
+@pytest.mark.unit
+def test_discriminator_defaults_func_kwargs_none_path():
+    model = get_discriminator(
+        (32, 32, 1),
+        depth=1,
+        n_initial_filters=4,
+        filter_size=2,
+        kernel_size=(3, 3),
+        dropout_rate=0.0,
+        func=tf.keras.layers.ReLU,
+        func_kwargs=None,
+        output_activation='sigmoid',
+        block_depth=1,
+        batch_normalization=False,
+        use_bias=True,
+        dropout_from_layer=99,
+    )
+    out = model(tf.random.uniform((1, 32, 32, 1)))
+    assert out.shape == (1, 1)
+
+
+@pytest.mark.unit
+def test_gan_train_step_without_reconstruction_loss_sets_zero_rec_term(mock_cfg):
+    generator = network(mock_cfg['input_shape'], **mock_cfg['training']['network_kwargs'])
+    discriminator = get_discriminator(mock_cfg['input_shape'], **mock_cfg['training']['discriminator_kwargs'])
+    gan = GAN(
+        generator=generator,
+        discriminator=discriminator,
+        g_optimizer=tf.keras.optimizers.Adam(1e-3),
+        d_optimizer=tf.keras.optimizers.Adam(1e-3),
+        adversarial_loss_fn=tf.keras.losses.BinaryCrossentropy(),
+        reconstruction_loss_fn=None,
+        adversarial_loss_weight=1.0,
+        reconstruction_loss_weight=100.0,
+        label_smoothing=0.0,
+    )
+
+    x = tf.random.uniform((2, 64, 64, 1))
+    y = tf.random.uniform((2, 64, 64, 1))
+    metrics = gan.train_step((x, y))
+    assert float(metrics['g_rec_loss']) == pytest.approx(0.0)
+
+
+@pytest.mark.unit
+def test_upsample_and_concat_default_kernel_initializer_path():
+    low_res = tf.keras.Input(shape=(16, 16, 8))
+    skip = tf.keras.Input(shape=(32, 32, 4))
+    upsampled = upsample_and_concat(
+        low_res,
+        skip,
+        kernel_size=3,
+        filter_size=2,
+        func=tf.keras.layers.ReLU,
+        func_kwargs={},
+        batch_normalization=False,
+        use_bias=True,
+        dropout_rate=0.0,
+        block_depth=1,
+        dropout_from_layer=99,
+        attention=False,
+        kernel_initializer=None,
+    )
+    model = tf.keras.Model([low_res, skip], upsampled)
+    out = model([tf.random.uniform((1, 16, 16, 8)), tf.random.uniform((1, 32, 32, 4))])
+    assert out.shape == (1, 32, 32, 4)
