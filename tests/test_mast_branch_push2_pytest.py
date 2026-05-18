@@ -347,7 +347,8 @@ def test_merge_products_with_metadata_adds_missing_url_column(monkeypatch: pytes
 def test_main_missing_mast_section_and_module_main_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(mast, 'parse_config_overrides', lambda *args, **kwargs: {})
     monkeypatch.setattr(mast, 'load_config', lambda **kwargs: {})
-    mast.main()
+    with pytest.raises(KeyError):
+        mast.main()
 
     import starter
 

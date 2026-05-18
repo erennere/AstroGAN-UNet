@@ -9,8 +9,6 @@ import pytest
 import tensorflow as tf
 from astropy.io import fits
 
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -317,7 +315,7 @@ def test_normalize_runtime_filepath_passthrough_posix(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.unit
-def test_open_fits_invalid_exptime_type_branch(tmp_path: Path):
+def test_open_fits_invalid_exptime_type_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fp = tmp_path / 'bad_exptime_type.fits'
     hdu = fits.ImageHDU(data=np.ones((4, 4), dtype=np.float32), name='SCI')
     hdu.header['EXPTIME'] = '[1,2]'
@@ -326,7 +324,6 @@ def test_open_fits_invalid_exptime_type_branch(tmp_path: Path):
     # Force a non-numeric/non-string EXPTIME after file open.
     with fits.open(fp, mode='update') as hdul:
         hdul['SCI'].header['EXPTIME'] = 1
-    monkeypatch = pytest.MonkeyPatch()
     original_open = ut.fits.open
 
     def fake_open(*args, **kwargs):
@@ -335,10 +332,7 @@ def test_open_fits_invalid_exptime_type_branch(tmp_path: Path):
         return hdul
 
     monkeypatch.setattr(ut.fits, 'open', fake_open)
-    try:
-        assert ut.open_fits(str(fp), ratio=1.0, type_of_image='SCI') is None
-    finally:
-        monkeypatch.undo()
+    assert ut.open_fits(str(fp), ratio=1.0, type_of_image='SCI') is None
 
 
 @pytest.mark.unit
@@ -364,7 +358,7 @@ def test_open_fits_invalid_exptime_type_with_fake_hdu(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.unit
-def test_save_checkpoint_model_early_return_when_not_zip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_save_checkpoint_model_early_return_when_not_zip(tmp_path: Path):
     class DummyModel:
         def save(self, path):
             Path(path).write_text('not-a-keras-zip', encoding='utf-8')
@@ -375,7 +369,7 @@ def test_save_checkpoint_model_early_return_when_not_zip(monkeypatch: pytest.Mon
 
 
 @pytest.mark.unit
-def test_create_tf_dataset_generator_yield_from_path(monkeypatch: pytest.MonkeyPatch):
+def test_create_tf_dataset_generator_yield_from_path():
     called = {'n': 0}
 
     def sample_generator(images, kwargs_data, scaling):

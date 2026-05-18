@@ -1,5 +1,6 @@
 """Minimal config loader for config.yaml."""
 
+import copy
 import inspect
 import hashlib
 import argparse
@@ -10,11 +11,19 @@ import re
 import string
 import sys
 import zlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 import yaml
+
+from src.config_parsing import (
+    parse_optional_bool,
+    parse_optional_float,
+    parse_optional_int,
+    parse_optional_str,
+)
 
 CONFIG_PATH = Path(__file__).resolve().with_name('config.yaml')
 RUNTIME_DATA_SCENARIO_MAP = {}
@@ -63,6 +72,237 @@ _RUNTIME_IMPORT_SPECS = {
     'wrap_extract_sources': ('src.evaluation.metrics', 'wrap_extract_sources'),
     'detect_sources_in_image': ('src.evaluation.metrics', 'detect_sources_in_image'),
 }
+
+
+class ConfigResolutionError(KeyError):
+    """Raised when config references or derived sections cannot be resolved."""
+
+
+@dataclass(frozen=True)
+class _OverrideSpec:
+    key: str
+    flag: str
+    positional_index: int
+    coerce: Callable[[Any], Any]
+    default_getter: Callable[[dict[str, Any], dict[str, Any]], Any]
+    apply: Callable[[dict[str, Any], Any], None]
+
+
+def _config_path_getter(*path_parts):
+    def getter(config_data, _explicit_overrides):
+        current = config_data
+        for part in path_parts:
+            current = current[part]
+        return current
+
+    return getter
+
+
+def _config_path_setter(*path_parts):
+    def setter(config_data, value):
+        current = config_data
+        for part in path_parts[:-1]:
+            current = current[part]
+        current[path_parts[-1]] = value
+
+    return setter
+
+
+def _coerce_last_name_filter_value(value):
+    parsed = parse_optional_str(value)
+    if parsed is None:
+        return None
+    return [name.strip() for name in parsed.split(',') if name.strip()]
+
+
+def _default_model_type(config_data, _explicit_overrides):
+    return 'gan' if config_data['new_train']['training']['use_gan'] else 'unet'
+
+
+def _default_loss_name(config_data, explicit_overrides):
+    model_type = explicit_overrides.get('model_type')
+    if model_type is None:
+        model_type = _default_model_type(config_data, explicit_overrides)
+    if str(model_type).lower() == 'gan':
+        return config_data['new_train']['gan']['loss_fn']
+    return config_data['new_train']['training']['g_loss_fn']
+
+
+def _apply_model_type_override(config_data, value):
+    config_data['new_train']['training']['use_gan'] = str(value).lower() == 'gan'
+
+
+_OVERRIDE_SPECS = (
+    _OverrideSpec(
+        key='nsigma',
+        flag='--nsigma',
+        positional_index=0,
+        coerce=lambda value: parse_optional_int(value, 'nsigma'),
+        default_getter=_config_path_getter('create_dataset', 'nsigma'),
+        apply=_config_path_setter('create_dataset', 'nsigma'),
+    ),
+    _OverrideSpec(
+        key='footprint_radius',
+        flag='--footprint-radius',
+        positional_index=1,
+        coerce=lambda value: parse_optional_int(value, 'footprint_radius'),
+        default_getter=_config_path_getter('create_dataset', 'footprint_radius'),
+        apply=_config_path_setter('create_dataset', 'footprint_radius'),
+    ),
+    _OverrideSpec(
+        key='npixels',
+        flag='--npixels',
+        positional_index=2,
+        coerce=lambda value: parse_optional_int(value, 'npixels'),
+        default_getter=_config_path_getter('create_dataset', 'npixels'),
+        apply=_config_path_setter('create_dataset', 'npixels'),
+    ),
+    _OverrideSpec(
+        key='model_type',
+        flag='--model-type',
+        positional_index=3,
+        coerce=parse_optional_str,
+        default_getter=_default_model_type,
+        apply=_apply_model_type_override,
+    ),
+    _OverrideSpec(
+        key='attention',
+        flag='--attention',
+        positional_index=4,
+        coerce=lambda value: parse_optional_bool(value, 'attention'),
+        default_getter=_config_path_getter('new_train', 'network', 'attention'),
+        apply=_config_path_setter('new_train', 'network', 'attention'),
+    ),
+    _OverrideSpec(
+        key='scaling',
+        flag='--scaling',
+        positional_index=5,
+        coerce=parse_optional_str,
+        default_getter=_config_path_getter('new_train', 'training', 'scaling'),
+        apply=_config_path_setter('new_train', 'training', 'scaling'),
+    ),
+    _OverrideSpec(
+        key='loss_name',
+        flag='--loss-name',
+        positional_index=6,
+        coerce=parse_optional_str,
+        default_getter=_default_loss_name,
+        apply=_config_path_setter('new_train', 'training', 'g_loss_fn'),
+    ),
+    _OverrideSpec(
+        key='dropout_rate',
+        flag='--dropout-rate',
+        positional_index=7,
+        coerce=lambda value: parse_optional_float(value, 'dropout_rate'),
+        default_getter=_config_path_getter('new_train', 'network', 'dropout_rate'),
+        apply=_config_path_setter('new_train', 'network', 'dropout_rate'),
+    ),
+    _OverrideSpec(
+        key='output_activation',
+        flag='--output-activation',
+        positional_index=8,
+        coerce=parse_optional_str,
+        default_getter=_config_path_getter('new_train', 'network', 'output_activation'),
+        apply=_config_path_setter('new_train', 'network', 'output_activation'),
+    ),
+    _OverrideSpec(
+        key='kernel_initializer',
+        flag='--kernel-initializer',
+        positional_index=9,
+        coerce=parse_optional_str,
+        default_getter=_config_path_getter('new_train', 'network', 'kernel_initializer'),
+        apply=_config_path_setter('new_train', 'network', 'kernel_initializer'),
+    ),
+    _OverrideSpec(
+        key='activation_name',
+        flag='--activation-name',
+        positional_index=10,
+        coerce=parse_optional_str,
+        default_getter=_config_path_getter('new_train', 'network', 'func'),
+        apply=_config_path_setter('new_train', 'network', 'func'),
+    ),
+    _OverrideSpec(
+        key='discriminator_activation',
+        flag='--discriminator-activation',
+        positional_index=11,
+        coerce=parse_optional_str,
+        default_getter=_config_path_getter('new_train', 'discriminator', 'func'),
+        apply=_config_path_setter('new_train', 'discriminator', 'func'),
+    ),
+    _OverrideSpec(
+        key='discriminator_output_activation',
+        flag='--discriminator-output-activation',
+        positional_index=12,
+        coerce=parse_optional_str,
+        default_getter=_config_path_getter('new_train', 'discriminator', 'output_activation'),
+        apply=_config_path_setter('new_train', 'discriminator', 'output_activation'),
+    ),
+    _OverrideSpec(
+        key='filter_surveys',
+        flag='--filter-surveys',
+        positional_index=13,
+        coerce=lambda value: parse_optional_bool(value, 'filter_surveys'),
+        default_getter=_config_path_getter('create_dataset', 'filter_surveys'),
+        apply=_config_path_setter('create_dataset', 'filter_surveys'),
+    ),
+    _OverrideSpec(
+        key='filter_by_last_name',
+        flag='--filter-by-last-name',
+        positional_index=14,
+        coerce=lambda value: parse_optional_bool(value, 'filter_by_last_name'),
+        default_getter=_config_path_getter('create_dataset', 'filter_by_last_name'),
+        apply=_config_path_setter('create_dataset', 'filter_by_last_name'),
+    ),
+    _OverrideSpec(
+        key='last_name_filter_value',
+        flag='--last-name-filter-value',
+        positional_index=15,
+        coerce=_coerce_last_name_filter_value,
+        default_getter=_config_path_getter('create_dataset', 'last_name_filter_value'),
+        apply=_config_path_setter('create_dataset', 'last_name_filter_value'),
+    ),
+)
+_OVERRIDE_SPECS_BY_KEY = {spec.key: spec for spec in _OVERRIDE_SPECS}
+
+
+def _override_keys():
+    return tuple(spec.key for spec in _OVERRIDE_SPECS)
+
+
+def _extract_override_values(source_dict):
+    return {spec.key: source_dict.get(spec.key) for spec in _OVERRIDE_SPECS}
+
+
+@lru_cache(maxsize=1)
+def _get_override_arg_parser():
+    parser = argparse.ArgumentParser(add_help=False)
+    for spec in _OVERRIDE_SPECS:
+        parser.add_argument(spec.flag, dest=spec.key)
+    return parser
+
+
+def _read_raw_override_values(argv, start_index):
+    cli_tokens = argv[start_index:]
+    if any(token.startswith('--') for token in cli_tokens):
+        parsed, _ = _get_override_arg_parser().parse_known_args(cli_tokens)
+        return _extract_override_values(vars(parsed))
+
+    raw = {}
+    for spec in _OVERRIDE_SPECS:
+        position = start_index + spec.positional_index
+        raw[spec.key] = argv[position] if len(argv) > position and argv[position] else None
+    return raw
+
+
+def _coerce_override_values(raw_overrides):
+    return {spec.key: spec.coerce(raw_overrides.get(spec.key)) for spec in _OVERRIDE_SPECS}
+
+
+def _effective_override_value(config_data, explicit_overrides, key):
+    value = explicit_overrides[key]
+    if value is not None:
+        return value
+    return _OVERRIDE_SPECS_BY_KEY[key].default_getter(config_data, explicit_overrides)
 
 def _pack_u16(value):
     if not isinstance(value, int) or value < 0 or value > 65535:
@@ -595,46 +835,6 @@ def _decode_models_dir(models_dir):
         **decoded_data,
     }
 
-def _parse_optional_int(value, field_name):
-    """Parse optional integer overrides."""
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid {field_name} '{value}'. Must be an integer.")
-
-def _parse_optional_float(value, field_name):
-    """Parse optional float overrides."""
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"Invalid {field_name} '{value}'. Must be numeric.")
-
-def _parse_optional_bool(value, field_name):
-    """Parse optional boolean overrides from common truthy/falsey strings."""
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    normalized = str(value).strip().lower()
-    if normalized in {'1', 'true', 'yes', 'y', 'on'}:
-        return True
-    if normalized in {'0', 'false', 'no', 'n', 'off'}:
-        return False
-    raise ValueError(f"Invalid {field_name} '{value}'. Must be a boolean value.")
-
-def _parse_optional_str(value):
-    """Parse optional string overrides and normalize common null-like values."""
-    if value is None:
-        return None
-    parsed = str(value).strip()
-    if parsed == '' or parsed.lower() in {'none', 'null'}:
-        return None
-    return parsed
-
 def _format_with_known_templates(text, templates):
     """Format only known replacement fields and preserve unknown placeholders."""
     formatter = string.Formatter()
@@ -815,7 +1015,7 @@ def _auto_resolve_training_entries(config_data):
 
     if 'data' in config_data and isinstance(config_data['data'], dict):
         data_cfg = config_data['data']
-        sigma_kernel_name = data_cfg.get('sigma_kernel_fn')
+        sigma_kernel_name = data_cfg['sigma_kernel_fn']
         data_cfg['sigma_kernel_requires_fit_data'] = sigma_kernel_name == 'fit'
         for key in ('candidates_fn', 'post_filter_fn', 'sample_fn', 'sigma_kernel_fn', 'noise_fn', 'stats_name_fn'):
             if key in data_cfg and data_cfg[key] is not None:
@@ -856,126 +1056,36 @@ def parse_config_overrides(args=None, argv=None, start_index=1):
 
     Returns a plain dict with optional values (None means "use config.yaml").
     """
-    keys = (
-        'nsigma', 'footprint_radius', 'npixels',
-        'model_type', 'attention', 'scaling', 'loss_name', 'dropout_rate',
-        'output_activation', 'kernel_initializer',
-        'activation_name', 'discriminator_activation', 'discriminator_output_activation',
-        'filter_surveys', 'filter_by_last_name', 'last_name_filter_value',
-    )
-
     if args is not None:
-        args_dict = vars(args)
-        raw = {
-            key: (args_dict[key] if key in args_dict else None) for key in keys
-        }
+        raw = _extract_override_values(vars(args))
     else:
         argv = sys.argv if argv is None else argv
-        cli_tokens = argv[start_index:]
+        raw = _read_raw_override_values(argv, start_index)
+    return _coerce_override_values(raw)
 
-        # Named flags are preferred; keep positional parsing for backward compatibility.
-        if any(token.startswith('--') for token in cli_tokens):
-            parser = argparse.ArgumentParser(add_help=False)
-            parser.add_argument('--nsigma', dest='nsigma')
-            parser.add_argument('--footprint-radius', dest='footprint_radius')
-            parser.add_argument('--npixels', dest='npixels')
-            parser.add_argument('--model-type', dest='model_type')
-            
-            parser.add_argument('--attention', dest='attention')
-            parser.add_argument('--scaling', dest='scaling')
-            parser.add_argument('--loss-name', dest='loss_name')
-            parser.add_argument('--dropout-rate', dest='dropout_rate')
-            parser.add_argument('--output-activation', dest='output_activation')
-            parser.add_argument('--kernel-initializer', dest='kernel_initializer')
-            parser.add_argument('--activation-name', dest='activation_name')
-            parser.add_argument('--discriminator-activation', dest='discriminator_activation')
-            parser.add_argument('--discriminator-output-activation', dest='discriminator_output_activation')
-            parser.add_argument('--filter-surveys', dest='filter_surveys')
-            parser.add_argument('--filter-by-last-name', dest='filter_by_last_name')
-            parser.add_argument('--last-name-filter-value', dest='last_name_filter_value')
-            parsed, _ = parser.parse_known_args(cli_tokens)
-            parsed_dict = vars(parsed)
-            raw = {key: (parsed_dict[key] if key in parsed_dict else None) for key in keys}
-        else:
-            raw = {
-                'nsigma': argv[start_index] if len(argv) > start_index and argv[start_index] else None,
-                'footprint_radius': argv[start_index + 1] if len(argv) > start_index + 1 and argv[start_index + 1] else None,
-                'npixels': argv[start_index + 2] if len(argv) > start_index + 2 and argv[start_index + 2] else None,
-                'model_type': argv[start_index + 3] if len(argv) > start_index + 3 and argv[start_index + 3] else None,
-                'attention': argv[start_index + 4] if len(argv) > start_index + 4 and argv[start_index + 4] else None,
-                'scaling': argv[start_index + 5] if len(argv) > start_index + 5 and argv[start_index + 5] else None,
-                'loss_name': argv[start_index + 6] if len(argv) > start_index + 6 and argv[start_index + 6] else None,
-                'dropout_rate': argv[start_index + 7] if len(argv) > start_index + 7 and argv[start_index + 7] else None,
-                'output_activation': argv[start_index + 8] if len(argv) > start_index + 8 and argv[start_index + 8] else None,
-                'kernel_initializer': argv[start_index + 9] if len(argv) > start_index + 9 and argv[start_index + 9] else None,
-                'activation_name': argv[start_index + 10] if len(argv) > start_index + 10 and argv[start_index + 10] else None,
-                'discriminator_activation': argv[start_index + 11] if len(argv) > start_index + 11 and argv[start_index + 11] else None,
-                'discriminator_output_activation': argv[start_index + 12] if len(argv) > start_index + 12 and argv[start_index + 12] else None,
-                'filter_surveys': argv[start_index + 13] if len(argv) > start_index + 13 and argv[start_index + 13] else None,
-                'filter_by_last_name': argv[start_index + 14] if len(argv) > start_index + 14 and argv[start_index + 14] else None,
-                'last_name_filter_value': argv[start_index + 15] if len(argv) > start_index + 15 and argv[start_index + 15] else None,
-            }
-    last_names = _parse_optional_str(raw['last_name_filter_value'])
-    if last_names is not None:
-        last_names = [name.strip() for name in last_names.split(',') if name.strip()]
-    return {
-        'nsigma': _parse_optional_int(raw['nsigma'], 'nsigma'),
-        'footprint_radius': _parse_optional_int(raw['footprint_radius'], 'footprint_radius'),
-        'npixels': _parse_optional_int(raw['npixels'], 'npixels'),
-        'model_type': _parse_optional_str(raw['model_type']),
-        'attention': _parse_optional_bool(raw['attention'], 'attention'),
-        'scaling': _parse_optional_str(raw['scaling']),
-        'loss_name': _parse_optional_str(raw['loss_name']),
-        'dropout_rate': _parse_optional_float(raw['dropout_rate'], 'dropout_rate'),
-        'output_activation': _parse_optional_str(raw['output_activation']),
-        
-        'kernel_initializer': _parse_optional_str(raw['kernel_initializer']),
-        'activation_name': _parse_optional_str(raw['activation_name']),
-        'discriminator_activation': _parse_optional_str(raw['discriminator_activation']),
-        'discriminator_output_activation': _parse_optional_str(raw['discriminator_output_activation']),
-        
-        'filter_surveys': _parse_optional_bool(raw['filter_surveys'], 'filter_surveys'),
-        'filter_by_last_name': _parse_optional_bool(raw['filter_by_last_name'], 'filter_by_last_name'),
-        'last_name_filter_value': last_names,
-
-    }
-
-def _override_config_with_explicit_values(config_data, explicit_overrides): 
-    config_data['create_dataset']['nsigma'] = explicit_overrides['nsigma'] if explicit_overrides['nsigma'] is not None else config_data['create_dataset']['nsigma']
-    config_data['create_dataset']['footprint_radius'] = explicit_overrides['footprint_radius'] if explicit_overrides['footprint_radius'] is not None else config_data['create_dataset']['footprint_radius']
-    config_data['create_dataset']['npixels'] = explicit_overrides['npixels'] if explicit_overrides['npixels'] is not None else config_data['create_dataset']['npixels']
-    config_data['training']['use_gan'] = explicit_overrides['model_type'].lower() == 'gan' if explicit_overrides['model_type'] is not None else config_data['training']['use_gan']
-    config_data['network']['attention'] = explicit_overrides['attention'] if explicit_overrides['attention'] is not None else config_data['network']['attention']
-    config_data['training']['scaling'] = explicit_overrides['scaling'] if explicit_overrides['scaling'] is not None else config_data['training']['scaling']
-    config_data['training']['g_loss_fn'] = explicit_overrides['loss_name'] if explicit_overrides['loss_name'] is not None else config_data['training']['g_loss_fn']
-    config_data['network']['dropout_rate'] = explicit_overrides['dropout_rate'] if explicit_overrides['dropout_rate'] is not None else config_data['network']['dropout_rate']
-    config_data['network']['output_activation'] = explicit_overrides['output_activation'] if explicit_overrides['output_activation'] is not None else config_data['network']['output_activation']
-
-    config_data['network']['kernel_initializer'] = explicit_overrides['kernel_initializer'] if explicit_overrides['kernel_initializer'] is not None else config_data['network']['kernel_initializer']
-    config_data['network']['func'] = explicit_overrides['activation_name'] if explicit_overrides['activation_name'] is not None else config_data['network']['func']
-    config_data['discriminator']['func'] = explicit_overrides['discriminator_activation'] if explicit_overrides['discriminator_activation'] is not None else config_data['discriminator']['func']
-    config_data['discriminator']['output_activation'] = explicit_overrides['discriminator_output_activation'] if explicit_overrides['discriminator_output_activation'] is not None else config_data['discriminator']['output_activation']
-
-    config_data['create_dataset']['filter_surveys'] = explicit_overrides['filter_surveys'] if explicit_overrides['filter_surveys'] is not None else config_data['create_dataset']['filter_surveys']
-    config_data['create_dataset']['filter_by_last_name'] = explicit_overrides['filter_by_last_name'] if explicit_overrides['filter_by_last_name'] is not None else config_data['create_dataset']['filter_by_last_name']
-    config_data['create_dataset']['last_name_filter_value'] = explicit_overrides['last_name_filter_value'] if explicit_overrides['last_name_filter_value'] is not None else config_data['create_dataset']['last_name_filter_value']
+def _override_config_with_explicit_values(config_data, explicit_overrides):
+    for spec in _OVERRIDE_SPECS:
+        value = explicit_overrides[spec.key]
+        if value is not None:
+            spec.apply(config_data, value)
     return config_data
 
 def _build_template_context(config_data, explicit_overrides):
     """Build a small formatting context used by path/file templates."""
     dataset_cfg = config_data['create_dataset']
-    train_cfg = config_data['training']
-    network_cfg = config_data['network']
-    gan_cfg = config_data['gan']
+    new_train_cfg = config_data['new_train']
+    train_cfg = new_train_cfg['training']
+    network_cfg = new_train_cfg['network']
+    gan_cfg = new_train_cfg['gan']
     time_tag = datetime.now().strftime('%Y-%m-%d-%H-%M')
 
-    filter_surveys = explicit_overrides['filter_surveys'] if explicit_overrides['filter_surveys'] is not None else dataset_cfg['filter_surveys']
-    filter_by_last_name = explicit_overrides['filter_by_last_name'] if explicit_overrides['filter_by_last_name'] is not None else dataset_cfg['filter_by_last_name']
-    last_name_filter_value = explicit_overrides['last_name_filter_value'] if explicit_overrides['last_name_filter_value'] is not None else dataset_cfg['last_name_filter_value']
-    
-    nsigma = explicit_overrides['nsigma'] if explicit_overrides['nsigma'] is not None else dataset_cfg['nsigma']
-    footprint_radius = explicit_overrides['footprint_radius'] if explicit_overrides['footprint_radius'] is not None else dataset_cfg['footprint_radius']
-    npixels = explicit_overrides['npixels'] if explicit_overrides['npixels'] is not None else dataset_cfg['npixels']
+    filter_surveys = _effective_override_value(config_data, explicit_overrides, 'filter_surveys')
+    filter_by_last_name = _effective_override_value(config_data, explicit_overrides, 'filter_by_last_name')
+    last_name_filter_value = _effective_override_value(config_data, explicit_overrides, 'last_name_filter_value')
+
+    nsigma = _effective_override_value(config_data, explicit_overrides, 'nsigma')
+    footprint_radius = _effective_override_value(config_data, explicit_overrides, 'footprint_radius')
+    npixels = _effective_override_value(config_data, explicit_overrides, 'npixels')
     
     data_dict = _encode_data_signature(
         filter_surveys=filter_surveys,
@@ -991,17 +1101,17 @@ def _build_template_context(config_data, explicit_overrides):
     data_alias_enriched_plain = data_dict['data_alias_enriched']
     data_alias_enriched_hex = data_dict['data_alias_enriched_hex']
 
-    model_type = explicit_overrides['model_type'] if explicit_overrides['model_type'] is not None else ('gan' if train_cfg['use_gan'] else 'unet')
-    attention = explicit_overrides['attention'] if explicit_overrides['attention'] is not None else bool(network_cfg['attention'])
+    model_type = _effective_override_value(config_data, explicit_overrides, 'model_type')
+    attention = bool(_effective_override_value(config_data, explicit_overrides, 'attention'))
     is_gan = 'GAN' if str(model_type).lower() == 'gan' else 'UNET'
     use_attention = 'ATTN' if attention else 'NOATTN'
-    scaling = explicit_overrides['scaling'] if explicit_overrides['scaling'] is not None else train_cfg['scaling']
-    loss_name = explicit_overrides['loss_name'] if explicit_overrides['loss_name'] is not None else (gan_cfg['loss_fn'] if str(model_type).lower() == 'gan' else train_cfg['g_loss_fn'])
-    dropout_rate = explicit_overrides['dropout_rate'] if explicit_overrides['dropout_rate'] is not None else network_cfg['dropout_rate']
-    activation_name = explicit_overrides['activation_name'] if explicit_overrides['activation_name'] is not None else network_cfg['func']
-    output_activation = explicit_overrides['output_activation'] if explicit_overrides['output_activation'] is not None else network_cfg['output_activation']
-    discriminator_activation = explicit_overrides['discriminator_activation'] if explicit_overrides['discriminator_activation'] is not None else config_data['discriminator']['func']
-    discriminator_output_activation = explicit_overrides['discriminator_output_activation'] if explicit_overrides['discriminator_output_activation'] is not None else config_data['discriminator']['output_activation']
+    scaling = _effective_override_value(config_data, explicit_overrides, 'scaling')
+    loss_name = _effective_override_value(config_data, explicit_overrides, 'loss_name')
+    dropout_rate = _effective_override_value(config_data, explicit_overrides, 'dropout_rate')
+    activation_name = _effective_override_value(config_data, explicit_overrides, 'activation_name')
+    output_activation = _effective_override_value(config_data, explicit_overrides, 'output_activation')
+    discriminator_activation = _effective_override_value(config_data, explicit_overrides, 'discriminator_activation')
+    discriminator_output_activation = _effective_override_value(config_data, explicit_overrides, 'discriminator_output_activation')
     _loss_aliases = {
         'MeanSquaredError':      'MSE',
         'MeanAbsoluteError':     'MAE',
@@ -1065,69 +1175,259 @@ def _build_template_context(config_data, explicit_overrides):
         'time_tag': time_tag,
     }
 
-def _build_evaluation_kwargs(config_data):
-    """Pre-assemble evaluation kwargs dicts and store them inside *config_data['evaluation']*.
 
-    Parameters
-    ----------
-    config_data : dict
-        Fully loaded and path-normalised config dictionary.
+def _normalize_config_tree(config_data, template_context, label):
+    """Normalize templates and synchronize computed path roots for one config tree."""
+    normalized = _require_mapping(_normalize_paths(config_data, template_context), label)
+    paths_cfg = _require_mapping(normalized['paths'], f'{label}["paths"]')
+    for key in ('data_dir', 'models_dir', 'multimodal_metrics_dir', 'singlemodal_metrics_dir', 'plots_dir'):
+        paths_cfg[key] = _normalize_paths(template_context[key], template_context)
+    return normalized
 
-    Notes
-    -----
-    Three sub-dicts are written into ``config_data['evaluation']``:
 
-    * ``data_kwargs`` — forwarded to :func:`~src.evaluation.metrics.get_test_images`.
-    * ``model_kwargs`` — forwarded through
-      :func:`~src.evaluation.metrics.process_models` down to
-      :func:`~src.evaluation.metrics.process_single_model`.
-    * ``kwargs_source`` — source-detection, photometry and SSIM parameters
-      forwarded to :func:`~src.evaluation.metrics.compare_images` and
-      :func:`~src.evaluation.uncropped_metrics.process_subdf`.  Includes the
-      ``uncropped_*`` sliding-window keys required by
-      :mod:`~src.evaluation.uncropped_metrics`.
-    """
-    eval_cfg     = config_data['evaluation']
-    data_cfg     = config_data['data']
-    training_cfg = config_data['training']
+_MISSING = object()
+_RUNTIME_SOURCE_PATTERN = re.compile(r"resolved from '([^']+)' at runtime", re.IGNORECASE)
+_RESOLUTION_ORDER = (
+    'mast',
+    'create_dataset',
+    'new_train',
+    'metrics',
+    'uncropped_metrics',
+    'merge_catalogs',
+    'prepare_images',
+    'prepare_plots',
+)
 
-    # Resolve func and noise_fn from string names to callables when possible.
-    eval_cfg['func'] = _resolve_name_from_runtime_registry(eval_cfg['func'])
-    noise_fn = _resolve_name_from_runtime_registry(data_cfg['noise_fn'])
 
-    # data_kwargs ────────────────────────────────────────────────────────────
-    eval_cfg['data_kwargs'] = {
-        'kwargs_data': data_cfg.copy(), # copy to avoid mutating original config entries
+def _require_mapping(value, path):
+    if not isinstance(value, dict):
+        raise TypeError(f'{path} must be a mapping.')
+    return value
+
+
+def _path_get(mapping, path, *, default=_MISSING):
+    current = mapping
+    for part in path.split('.'):
+        if not isinstance(current, dict) or part not in current:
+            return default
+        current = current[part]
+    return current
+
+
+def _write_path_value(mapping, path, value):
+    parts = path.split('.')
+    current = mapping
+    for part in parts[:-1]:
+        if part not in current:
+            current[part] = {}
+        elif not isinstance(current[part], dict):
+            raise ConfigResolutionError(f'Cannot assign {path!r}: {part!r} is not a mapping.')
+        current = current[part]
+
+    current[parts[-1]] = copy.deepcopy(value)
+
+
+def _section_has_forced_values(section_name, forced_paths):
+    prefix = f'{section_name}.'
+    return any(path.startswith(prefix) for path in forced_paths)
+
+
+def _parse_runtime_source_comment(comment):
+    match = _RUNTIME_SOURCE_PATTERN.search(comment or '')
+    if match is None:
+        return ()
+    refs_text = match.group(1).replace(' and ', ',')
+    return tuple(part.strip() for part in refs_text.split(',') if part.strip())
+
+
+def _extract_runtime_sources(config_text):
+    runtime_sources = {}
+    stack = []
+
+    for line in config_text.splitlines():
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith('#') or stripped.startswith('-'):
+            continue
+
+        indent = len(line) - len(stripped)
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+
+        if ':' not in stripped:
+            continue
+
+        key, rest = stripped.split(':', 1)
+        key = key.strip()
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+            continue
+
+        value_part, comment = rest, ''
+        if '#' in rest:
+            value_part, comment = rest.split('#', 1)
+            comment = comment.strip()
+        value = value_part.strip()
+
+        path = '.'.join([part for _, part in stack] + [key])
+        if value == '':
+            stack.append((indent, key))
+            continue
+
+        refs = _parse_runtime_source_comment(comment)
+        if value == 'null' and refs:
+            runtime_sources[path] = refs
+
+    return runtime_sources
+
+
+@lru_cache(maxsize=8)
+def _read_runtime_sources_from_path(path_str):
+    path = Path(path_str)
+    if not path.exists():
+        return {}
+    return _extract_runtime_sources(path.read_text(encoding='utf-8'))
+
+
+def _get_runtime_sources(config_path):
+    runtime_sources = dict(_read_runtime_sources_from_path(str(CONFIG_PATH)))
+    runtime_sources.update(_read_runtime_sources_from_path(str(config_path)))
+    return runtime_sources
+
+
+def _collect_changed_runtime_refs(baseline_config, overridden_config, runtime_sources):
+    changed_refs = set()
+    for source_paths in runtime_sources.values():
+        for source_path in source_paths:
+            if _path_get(baseline_config, source_path, default=_MISSING) != _path_get(overridden_config, source_path, default=_MISSING):
+                changed_refs.add(source_path)
+    return changed_refs
+
+
+def _apply_runtime_transform(target_path, source_values):
+    leaf = target_path.rsplit('.', 1)[-1]
+
+    if target_path == 'create_dataset.split_dirs':
+        return list(source_values)
+
+    if leaf in {'patch_size', 'uncropped_patch_size'}:
+        value = source_values[0]
+        if not isinstance(value, int):
+            raise ConfigResolutionError(f'{target_path!r} requires an integer source value.')
+        return [value, value, 1]
+
+    if leaf == 'model_prototype':
+        value = source_values[0]
+        if not isinstance(value, str) or not value:
+            raise ConfigResolutionError(f'{target_path!r} requires a non-empty string source value.')
+        return re.sub(r'\{epoch[^}]*\}', '*', value).replace('{prefix}', '*')
+
+    if len(source_values) == 1:
+        return source_values[0]
+    return list(source_values)
+
+
+def _resolve_section_runtime_values(section_name, section_cfg, resolved_root, runtime_sources, forced_paths):
+    prefix = f'{section_name}.'
+    current_root = dict(resolved_root)
+    current_root[section_name] = section_cfg
+
+    for full_target_path, source_paths in runtime_sources.items():
+        if not full_target_path.startswith(prefix):
+            continue
+
+        target_path = full_target_path[len(prefix):]
+        current_value = _path_get(section_cfg, target_path, default=_MISSING)
+        if current_value is _MISSING:
+            raise ConfigResolutionError(f'Missing required config key: {full_target_path!r}.')
+
+        source_is_forced = any(source_path in forced_paths for source_path in source_paths)
+        if current_value is not None and not source_is_forced:
+            continue
+
+        source_values = []
+        for source_path in source_paths:
+            source_value = _path_get(current_root, source_path, default=_MISSING)
+            if source_value is _MISSING:
+                raise ConfigResolutionError(f'Unknown runtime source {source_path!r} for {full_target_path!r}.')
+            source_values.append(copy.deepcopy(source_value))
+
+        _write_path_value(section_cfg, target_path, _apply_runtime_transform(full_target_path, source_values))
+        if source_is_forced:
+            forced_paths.add(full_target_path)
+
+
+def _validate_and_sync_checkpoint_config(config_data):
+    """Validate checkpoint settings for the resolved new_train section."""
+    training_cfg = _require_mapping(config_data.get('training'), 'config["training"]')
+    data_cfg = _require_mapping(config_data.get('data'), 'config["data"]')
+
+    checkpoint_filename_pattern = training_cfg['checkpoint_filename_pattern']
+    if not isinstance(checkpoint_filename_pattern, str) or not checkpoint_filename_pattern:
+        raise ValueError('training.checkpoint_filename_pattern must be a non-empty string.')
+
+    restore_kwargs = training_cfg['checkpoint_restore_kwargs']
+    if not isinstance(restore_kwargs, dict):
+        raise TypeError('training.checkpoint_restore_kwargs must be a mapping.')
+    restore_kwargs = dict(restore_kwargs)
+
+    if 'filename_pattern' not in restore_kwargs:
+        raise ValueError("training.checkpoint_restore_kwargs must include 'filename_pattern'.")
+    if restore_kwargs['filename_pattern'] != checkpoint_filename_pattern:
+        raise ValueError('training.checkpoint_restore_kwargs.filename_pattern must match training.checkpoint_filename_pattern.')
+
+    training_cfg['checkpoint_restore_kwargs'] = restore_kwargs
+    data_cfg['checkpoint_restore_kwargs'] = copy.deepcopy(restore_kwargs)
+    data_cfg['checkpoint_custom_epoch'] = training_cfg['checkpoint_custom_epoch']
+    return config_data
+
+
+def _finalize_new_train_section(section_cfg, _resolved_root):
+    _validate_and_sync_checkpoint_config(section_cfg)
+    _auto_resolve_training_entries(section_cfg)
+
+    training_cfg = section_cfg['training']
+    training_cfg['data_kwargs'] = copy.deepcopy(section_cfg['data'])
+    training_cfg['network_kwargs'] = copy.deepcopy(section_cfg['network'])
+    training_cfg['discriminator_kwargs'] = copy.deepcopy(section_cfg['discriminator'])
+    training_cfg['gan_kwargs'] = copy.deepcopy(section_cfg['gan'])
+
+
+def _finalize_metrics_section(section_cfg, resolved_root):
+    data_cfg = copy.deepcopy(resolved_root['new_train']['data'])
+    create_dataset_cfg = resolved_root['create_dataset']
+
+    section_cfg['func'] = _resolve_name_from_runtime_registry(section_cfg['func'])
+    noise_fn = data_cfg['noise_fn']
+
+    section_cfg['data_kwargs'] = {
+        'kwargs_data': data_cfg,
     }
-    if eval_cfg['use_custom_test_images']:
-        eval_cfg['data_kwargs']['kwargs_data']['metadata_filepath'] = config_data['create_dataset']['noisy_filtered_metadata_output_file']
+    if section_cfg['use_custom_test_images']:
+        section_cfg['data_kwargs']['kwargs_data']['metadata_filepath'] = create_dataset_cfg['noisy_filtered_metadata_output_file']
 
-    # model_kwargs ───────────────────────────────────────────────────────────
-    eval_cfg['model_kwargs'] = {
-        'patch_size':          tuple(eval_cfg['patch_size']),
-        'stride':              tuple(eval_cfg['stride']),
-        'weighting':           eval_cfg['weighting'],
-        'batch_size':          eval_cfg['batch_size'],
-        'gaussian_sigma':      eval_cfg['gaussian_sigma'],
-        'type_of_image':       eval_cfg['type_of_image'],
-        'nan_value':           data_cfg['nan_value'],
-        'posinf_value':        data_cfg['posinf_value'],
-        'neginf_value':        data_cfg['neginf_value'],
-        'location_col':        data_cfg['location_col'],
-        'exp_time_col':        data_cfg['exposure_col'],
-        'new_exp_time_col':    eval_cfg['new_exp_time_col'],
-        'sigma_key':           data_cfg['sigma_key'],
-        'noise_fn':            noise_fn,
-        'combined_images_dir': eval_cfg['combined_images_dir'],
-        'png_dir':             eval_cfg['png_dir'],
-        'org_dir':             eval_cfg['org_dir'],
-        'noisy_dir':           eval_cfg['noisy_dir'],
-        'rec_dir':             eval_cfg['rec_dir'],
-        'use_mosaic':          eval_cfg['use_mosaic'],
+    section_cfg['model_kwargs'] = {
+        'patch_size': tuple(section_cfg['patch_size']),
+        'stride': tuple(section_cfg['stride']),
+        'weighting': section_cfg['weighting'],
+        'batch_size': section_cfg['batch_size'],
+        'gaussian_sigma': section_cfg['gaussian_sigma'],
+        'type_of_image': section_cfg['type_of_image'],
+        'nan_value': data_cfg['nan_value'],
+        'posinf_value': data_cfg['posinf_value'],
+        'neginf_value': data_cfg['neginf_value'],
+        'location_col': data_cfg['location_col'],
+        'exp_time_col': data_cfg['exposure_col'],
+        'new_exp_time_col': section_cfg['new_exp_time_col'],
+        'sigma_key': data_cfg['sigma_key'],
+        'noise_fn': noise_fn,
+        'combined_images_dir': section_cfg['combined_images_dir'],
+        'png_dir': section_cfg['png_dir'],
+        'org_dir': section_cfg['org_dir'],
+        'noisy_dir': section_cfg['noisy_dir'],
+        'rec_dir': section_cfg['rec_dir'],
+        'use_mosaic': section_cfg['use_mosaic'],
     }
 
-    # kwargs_source ──────────────────────────────────────────────────────────
-    _source_keys = [
+    source_keys = [
         'sigma', 'maxiters', 'nsigma', 'npixels', 'nlevels', 'contrast',
         'footprint_radius', 'distance_threshold', 'deblend', 'deblend_timeout',
         'alpha', 'beta', 'gamma', 'k1', 'k2', 'win_size', 'win_sigma',
@@ -1135,314 +1435,84 @@ def _build_evaluation_kwargs(config_data):
         'r_min', 'elongation_fraction', 'PHOT_AUTOPARAMS', 'maskthresh',
         'minarea', 'org_minarea', 'filter_type', 'deblend_nthresh', 'deblend_cont',
         'clean', 'clean_param',
-        # uncropped (Faber) sliding-window inference parameters
-        'uncropped_patch_size', 'uncropped_stride', 'uncropped_weighting', 'uncropped_batch_size',
     ]
-    eval_cfg['kwargs_source'] = {k: eval_cfg[k] for k in _source_keys if k in eval_cfg}
-    eval_cfg['kwargs_source']['sigma_key'] = data_cfg['sigma_key']
-    eval_cfg['kwargs_source']['noise_fn'] = noise_fn
-    eval_cfg['kwargs_source']['type_of_image'] = eval_cfg['type_of_image']
-    eval_cfg['kwargs_source']['nan_value'] = data_cfg['nan_value']
-    eval_cfg['kwargs_source']['posinf_value'] = data_cfg['posinf_value']
-    eval_cfg['kwargs_source']['neginf_value'] = data_cfg['neginf_value']
-
-    eval_cfg['filter_by_last_name'] = config_data['create_dataset']['filter_by_last_name']
-    eval_cfg['last_name_filter_value'] = config_data['create_dataset']['last_name_filter_value']
-    eval_cfg['last_name_col'] = config_data['create_dataset']['last_name_col']
+    section_cfg['kwargs_source'] = {key: copy.deepcopy(section_cfg[key]) for key in source_keys if key in section_cfg}
+    section_cfg['kwargs_source']['sigma_key'] = data_cfg['sigma_key']
+    section_cfg['kwargs_source']['noise_fn'] = noise_fn
+    section_cfg['kwargs_source']['type_of_image'] = section_cfg['type_of_image']
+    section_cfg['kwargs_source']['nan_value'] = data_cfg['nan_value']
+    section_cfg['kwargs_source']['posinf_value'] = data_cfg['posinf_value']
+    section_cfg['kwargs_source']['neginf_value'] = data_cfg['neginf_value']
 
 
-def _get_shared_binding_policy(config_data):
-    """Return shared binding policy (defaults to preserving explicit config values)."""
-    shared_bindings_cfg = config_data.get('shared_bindings', {})
-    if not isinstance(shared_bindings_cfg, dict):
-        return {'prefer_explicit_values': True}
-    return {
-        'prefer_explicit_values': bool(shared_bindings_cfg.get('prefer_explicit_values', True)),
-    }
-
-def _ensure_runtime_shared_groups(config_data):
-    """Create grouped runtime-shared metadata that records derived vs explicit values."""
-    runtime_cfg = config_data.setdefault('runtime', {})
-    shared_cfg = runtime_cfg.setdefault('shared', {})
-    for group_name in (
-        'checkpoint',
-        'paths',
-        'data_dataset_mast',
-        'training_evaluation',
-        'visualization',
-    ):
-        shared_cfg.setdefault(group_name, {})
-    return shared_cfg
-
-def _bind_shared_value(config_data, section, key, derived_value, *, group_name, policy, source_path):
-    """Bind one shared value with optional explicit override and track its origin."""
-    section_cfg = config_data[section]
-    prefer_explicit_values = policy['prefer_explicit_values']
-    has_explicit = key in section_cfg and section_cfg[key] is not None
-
-    if prefer_explicit_values and has_explicit:
-        value = section_cfg[key]
-        origin = 'explicit'
-    else:
-        section_cfg[key] = derived_value
-        value = derived_value
-        origin = 'derived'
-
-    runtime_shared = _ensure_runtime_shared_groups(config_data)
-    runtime_shared[group_name][f'{section}.{key}'] = {
-        'value': value,
-        'origin': origin,
-        'source': source_path,
-    }
-    return value
-
-def _bind_nested_shared_value(config_data, section, subsection, key, derived_value, *, group_name, policy, source_path):
-    """Bind one shared value for section/subsection/key with explicit-override support."""
-    section_cfg = config_data[section]
-    subsection_cfg = section_cfg.setdefault(subsection, {})
-    if not isinstance(subsection_cfg, dict):
-        raise TypeError(f'config[{section!r}][{subsection!r}] must be a mapping for shared bindings.')
-
-    prefer_explicit_values = policy['prefer_explicit_values']
-    has_explicit = key in subsection_cfg and subsection_cfg[key] is not None
-
-    if prefer_explicit_values and has_explicit:
-        value = subsection_cfg[key]
-        origin = 'explicit'
-    else:
-        subsection_cfg[key] = derived_value
-        value = derived_value
-        origin = 'derived'
-
-    runtime_shared = _ensure_runtime_shared_groups(config_data)
-    runtime_shared[group_name][f'{section}.{subsection}.{key}'] = {
-        'value': value,
-        'origin': origin,
-        'source': source_path,
-    }
-    return value
-
-def _validate_and_sync_checkpoint_config(config_data):
-    """Validate checkpoint settings once and share them across consumers."""
-    policy = _get_shared_binding_policy(config_data)
-    training_cfg = config_data['training']
-
-    checkpoint_filename_pattern = training_cfg['checkpoint_filename_pattern']
-    if not isinstance(checkpoint_filename_pattern, str) or not checkpoint_filename_pattern:
-        raise ValueError("training.checkpoint_filename_pattern must be a non-empty string.")
-
-    restore_kwargs = training_cfg['checkpoint_restore_kwargs']
-    if isinstance(restore_kwargs, dict):
-        restore_kwargs = dict(restore_kwargs)
-    else:
-        raise TypeError("training.checkpoint_restore_kwargs must be a mapping.")
-
-    if 'filename_pattern' not in restore_kwargs:
-        raise ValueError("training.checkpoint_restore_kwargs must include 'filename_pattern'.")
-    if restore_kwargs['filename_pattern'] != checkpoint_filename_pattern:
-        raise ValueError("training.checkpoint_restore_kwargs.filename_pattern must match training.checkpoint_filename_pattern.")
-
-    training_cfg['checkpoint_restore_kwargs'] = restore_kwargs
-    _bind_shared_value(
-        config_data,
-        'data',
-        'checkpoint_restore_kwargs',
-        restore_kwargs,
-        group_name='checkpoint',
-        policy=policy,
-        source_path='training.checkpoint_restore_kwargs',
-    )
-    _bind_shared_value(
-        config_data,
-        'data',
-        'checkpoint_custom_epoch',
-        training_cfg['checkpoint_custom_epoch'],
-        group_name='checkpoint',
-        policy=policy,
-        source_path='training.checkpoint_custom_epoch',
-    )
-
-    model_prototype = re.sub(r'\{epoch[^}]*\}', '*', checkpoint_filename_pattern).replace('{prefix}', '*')
-    _bind_shared_value(
-        config_data,
-        'evaluation',
-        'model_prototype',
-        model_prototype,
-        group_name='checkpoint',
-        policy=policy,
-        source_path='training.checkpoint_filename_pattern',
-    )
-
-def _sync_path_bindings(config_data):
-    """Bind canonical paths consumed by data, mast, training and visualization scripts."""
-    policy = _get_shared_binding_policy(config_data)
-    paths_cfg = config_data['paths']
-
-    _bind_shared_value(config_data, 'data', 'training_path', paths_cfg['training_path'], group_name='paths', policy=policy, source_path='paths.training_path')
-    _bind_shared_value(config_data, 'data', 'eval_path', paths_cfg['eval_path'], group_name='paths', policy=policy, source_path='paths.eval_path')
-    _bind_shared_value(config_data, 'data', 'fit_data_filepath', paths_cfg['fit_info_csv'], group_name='paths', policy=policy, source_path='paths.fit_info_csv')
-
-    _bind_shared_value(config_data, 'mast', 'metadata_output', paths_cfg['metadata_csv'], group_name='paths', policy=policy, source_path='paths.metadata_csv')
-    _bind_shared_value(config_data, 'create_dataset', 'metadata_filepath', paths_cfg['metadata_csv'], group_name='paths', policy=policy, source_path='paths.metadata_csv')
-    _bind_shared_value(config_data, 'create_dataset', 'dataset_dir', paths_cfg['data_dir'], group_name='paths', policy=policy, source_path='paths.data_dir')
-    split_dirs = [
-        paths_cfg['training_path'],
-        paths_cfg['eval_path'],
-        paths_cfg['test_path'],
-    ]
-    _bind_shared_value(config_data, 'create_dataset', 'split_dirs', split_dirs, group_name='paths', policy=policy, source_path='paths.training_path|paths.eval_path|paths.test_path')
-
-    _bind_shared_value(config_data, 'training', 'training_results_dir', paths_cfg['models_dir'], group_name='paths', policy=policy, source_path='paths.models_dir')
-    _bind_shared_value(config_data, 'evaluation', 'models_dir', paths_cfg['models_dir'], group_name='paths', policy=policy, source_path='paths.models_dir')
-
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'model_dir', paths_cfg['models_dir'], group_name='paths', policy=policy, source_path='paths.models_dir')
-
-def _sync_data_dataset_mast_contract(config_data):
-    """Share schema and preprocessing parameters used jointly by data ingestion scripts."""
-    policy = _get_shared_binding_policy(config_data)
-    data_cfg = config_data['data']
-
-    _bind_shared_value(config_data, 'data', 'metadata_filepath', config_data['create_dataset']['cropped_stats_output_file'], group_name='data_dataset_mast', policy=policy, source_path='create_dataset.cropped_stats_output_file')
-    _bind_shared_value(config_data, 'evaluation', 'metadata_filepath', config_data['create_dataset']['cropped_stats_output_file'], group_name='data_dataset_mast', policy=policy, source_path='create_dataset.cropped_stats_output_file')
-    _bind_shared_value(config_data, 'data', 'stats_column_map', config_data['create_dataset']['stats_column_map'], group_name='data_dataset_mast', policy=policy, source_path='create_dataset.stats_column_map')
-    _bind_shared_value(config_data, 'data', 'original_stats_prefix', config_data['create_dataset']['original_stats_prefix'], group_name='data_dataset_mast', policy=policy, source_path='create_dataset.original_stats_prefix')
-
-    _bind_shared_value(config_data, 'create_dataset', 'id_column', data_cfg['dataset'], group_name='data_dataset_mast', policy=policy, source_path='data.dataset')
-    _bind_shared_value(config_data, 'mast', 'id_column', data_cfg['dataset'], group_name='data_dataset_mast', policy=policy, source_path='data.dataset')
-    _bind_shared_value(config_data, 'create_dataset', 'url_column', config_data['mast']['url_column'], group_name='data_dataset_mast', policy=policy, source_path='mast.url_column')
-    _bind_shared_value(config_data, 'create_dataset', 'exp_column', data_cfg['exposure_col'], group_name='data_dataset_mast', policy=policy, source_path='data.exposure_col')
-    _bind_shared_value(config_data, 'mast', 'main_column', data_cfg['exposure_col'], group_name='data_dataset_mast', policy=policy, source_path='data.exposure_col')
-    _bind_shared_value(config_data, 'create_dataset', 'type_of_image', data_cfg['type_of_image'], group_name='data_dataset_mast', policy=policy, source_path='data.type_of_image')
-    _bind_shared_value(config_data, 'evaluation', 'type_of_image', data_cfg['type_of_image'], group_name='data_dataset_mast', policy=policy, source_path='data.type_of_image')
-
-    _bind_shared_value(config_data, 'create_dataset', 'nan_value', data_cfg['nan_value'], group_name='data_dataset_mast', policy=policy, source_path='data.nan_value')
-    _bind_shared_value(config_data, 'create_dataset', 'posinf_value', data_cfg['posinf_value'], group_name='data_dataset_mast', policy=policy, source_path='data.posinf_value')
-    _bind_shared_value(config_data, 'create_dataset', 'neginf_value', data_cfg['neginf_value'], group_name='data_dataset_mast', policy=policy, source_path='data.neginf_value')
-    _bind_shared_value(config_data, 'create_dataset', 'location_col', data_cfg['location_col'], group_name='data_dataset_mast', policy=policy, source_path='data.location_col')
-    _bind_shared_value(config_data, 'create_dataset', 'ps', data_cfg['ps'], group_name='data_dataset_mast', policy=policy, source_path='data.ps')
-
-    _bind_shared_value(config_data, 'create_dataset', 'reset_after', config_data['mast']['reset_after'], group_name='data_dataset_mast', policy=policy, source_path='mast.reset_after')
-    _bind_shared_value(config_data, 'create_dataset', 'max_requests', config_data['mast']['max_requests'], group_name='data_dataset_mast', policy=policy, source_path='mast.max_requests')
+def _finalize_uncropped_metrics_section(section_cfg, _resolved_root):
+    kwargs_source = copy.deepcopy(section_cfg['kwargs_source'])
+    kwargs_source['uncropped_patch_size'] = copy.deepcopy(section_cfg['uncropped_patch_size'])
+    kwargs_source['uncropped_stride'] = copy.deepcopy(section_cfg['uncropped_stride'])
+    kwargs_source['uncropped_weighting'] = section_cfg['uncropped_weighting']
+    kwargs_source['uncropped_batch_size'] = section_cfg['uncropped_batch_size']
+    kwargs_source['uncropped_use_mosaic'] = section_cfg['uncropped_use_mosaic']
+    section_cfg['kwargs_source'] = kwargs_source
+    section_cfg['data_kwargs'] = copy.deepcopy(section_cfg['data_kwargs'])
 
 
-def _sync_training_evaluation_contract(config_data):
-    """Share patching and detection hyperparameters between training and evaluation."""
-    policy = _get_shared_binding_policy(config_data)
-    data_cfg = config_data['data']
+_SECTION_FINALIZERS = {
+    'new_train': _finalize_new_train_section,
+    'metrics': _finalize_metrics_section,
+    'uncropped_metrics': _finalize_uncropped_metrics_section,
+}
 
-    patch_size = [data_cfg['ps'], data_cfg['ps'], 1]
-    training_patch_size = _bind_shared_value(config_data, 'training', 'patch_size', patch_size, group_name='training_evaluation', policy=policy, source_path='data.ps')
-
-    _bind_shared_value(config_data, 'evaluation', 'patch_size', training_patch_size, group_name='training_evaluation', policy=policy, source_path='training.patch_size')
-    _bind_shared_value(config_data, 'evaluation', 'batch_size', config_data['training']['batch_size'], group_name='training_evaluation', policy=policy, source_path='training.batch_size')
-    _bind_shared_value(config_data, 'evaluation', 'scaling', config_data['training']['scaling'], group_name='training_evaluation', policy=policy, source_path='training.scaling')
-    for key in ('sigma', 'nsigma', 'npixels', 'footprint_radius', 'maxiters'):
-        _bind_shared_value(config_data, 'evaluation', key, config_data['create_dataset'][key], group_name='training_evaluation', policy=policy, source_path=f'create_dataset.{key}')
-    _bind_shared_value(config_data, 'evaluation', 'hist_min_exp', data_cfg['lowest_power'], group_name='training_evaluation', policy=policy, source_path='data.lowest_power')
-    _bind_shared_value(config_data, 'evaluation', 'hist_max_exp', data_cfg['highest_power'], group_name='training_evaluation', policy=policy, source_path='data.highest_power')
-    _bind_shared_value(config_data, 'evaluation', 'uncropped_patch_size', config_data['training']['patch_size'], group_name='training_evaluation', policy=policy, source_path='training.patch_size')
-    _bind_shared_value(config_data, 'evaluation', 'uncropped_stride', config_data['evaluation']['stride'], group_name='training_evaluation', policy=policy, source_path='evaluation.stride')
-    _bind_shared_value(config_data, 'evaluation', 'uncropped_weighting', config_data['evaluation']['weighting'], group_name='training_evaluation', policy=policy, source_path='evaluation.weighting')
-
-def _sync_visualization_contract(config_data):
-    """Propagate runtime visualization defaults from data settings."""
-    policy = _get_shared_binding_policy(config_data)
-    data_cfg = config_data['data']
-    paths_cfg = config_data['paths']
-    eval_cfg = config_data['evaluation']
-    training_cfg = config_data['training']
-
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'low', data_cfg['low'], group_name='visualization', policy=policy, source_path='data.low')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'dataset', data_cfg['dataset'], group_name='visualization', policy=policy, source_path='data.dataset')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'metadata_filepath', paths_cfg['metadata_csv'], group_name='visualization', policy=policy, source_path='paths.metadata_csv')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'ps', data_cfg['ps'], group_name='visualization', policy=policy, source_path='data.ps')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'type_of_image', data_cfg['type_of_image'], group_name='visualization', policy=policy, source_path='data.type_of_image')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'exp_column', data_cfg['exposure_col'], group_name='visualization', policy=policy, source_path='data.exposure_col')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'model_prototype', eval_cfg['model_prototype'], group_name='visualization', policy=policy, source_path='evaluation.model_prototype')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'scaling', training_cfg['scaling'], group_name='visualization', policy=policy, source_path='training.scaling')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'ratio_initial', data_cfg['ratio_initial'], group_name='visualization', policy=policy, source_path='data.ratio_initial')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'ratio_count', data_cfg['ratio_count'], group_name='visualization', policy=policy, source_path='data.ratio_count')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_images', 'ratio_growth', data_cfg['ratio_growth'], group_name='visualization', policy=policy, source_path='data.ratio_growth')
-
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_plots', 'metadata_filepath', config_data['create_dataset']['cropped_stats_output_file'], group_name='visualization', policy=policy, source_path='create_dataset.cropped_stats_output_file')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_plots', 'uncropped_output_dir', eval_cfg['uncropped_output_dir'], group_name='visualization', policy=policy, source_path='evaluation.uncropped_output_dir')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_plots', 'photometrical_data_filename', eval_cfg['photometrical_data_filename'], group_name='visualization', policy=policy, source_path='evaluation.photometrical_data_filename')
-    _bind_nested_shared_value(config_data, 'visualization', 'prepare_plots', 'uncropped_results_csv', eval_cfg['uncropped_results_csv'], group_name='visualization', policy=policy, source_path='evaluation.uncropped_results_csv')
-
-def _apply_shared_runtime_bindings(config_data):
-    """Apply grouped cross-section runtime bindings used by multiple scripts."""
-    policy = _get_shared_binding_policy(config_data)
-    config_data.setdefault('runtime', {})['shared_binding_policy'] = dict(policy)
-
-    _validate_and_sync_checkpoint_config(config_data)
-    _sync_path_bindings(config_data)
-    _sync_data_dataset_mast_contract(config_data)
-    _sync_training_evaluation_contract(config_data)
-    _sync_visualization_contract(config_data)
-
-def _sync_post_eval_runtime_bindings(config_data):
-    """Bind values that depend on evaluation kwargs built later in load_config."""
-    policy = _get_shared_binding_policy(config_data)
-    _bind_nested_shared_value(
-        config_data,
-        'visualization',
-        'prepare_images',
+_DERIVED_FORCED_OUTPUTS = {
+    'new_train': (
+        'training.data_kwargs',
+        'training.network_kwargs',
+        'training.discriminator_kwargs',
+        'training.gan_kwargs',
+    ),
+    'metrics': (
+        'data_kwargs',
+        'model_kwargs',
         'kwargs_source',
-        config_data['evaluation']['kwargs_source'],
-        group_name='visualization',
-        policy=policy,
-        source_path='evaluation.kwargs_source',
-    )
-    _bind_nested_shared_value(
-        config_data,
-        'visualization',
-        'prepare_images',
+    ),
+    'uncropped_metrics': (
+        'kwargs_source',
         'data_kwargs',
-        dict(config_data['data']),
-        group_name='visualization',
-        policy=policy,
-        source_path='data.*',
-    )
+    ),
+}
 
-def _sync_post_training_runtime_bindings(config_data):
-    """Bind training-local payloads that originate from other config sections."""
-    policy = _get_shared_binding_policy(config_data)
-    _bind_shared_value(
-        config_data,
-        'training',
-        'data_kwargs',
-        dict(config_data['data']),
-        group_name='training_evaluation',
-        policy=policy,
-        source_path='data.*',
-    )
-    _bind_shared_value(
-        config_data,
-        'training',
-        'network_kwargs',
-        dict(config_data['network']),
-        group_name='training_evaluation',
-        policy=policy,
-        source_path='network.*',
-    )
-    _bind_shared_value(
-        config_data,
-        'training',
-        'discriminator_kwargs',
-        dict(config_data['discriminator']),
-        group_name='training_evaluation',
-        policy=policy,
-        source_path='discriminator.*',
-    )
-    _bind_shared_value(
-        config_data,
-        'training',
-        'gan_kwargs',
-        dict(config_data['gan']),
-        group_name='training_evaluation',
-        policy=policy,
-        source_path='gan.*',
-    )
+
+def resolve_config(config_data, *, runtime_sources: dict[str, tuple[str, ...]] | None = None, forced_paths: set[str] | None = None):
+    """Resolve null placeholders into a per-script runtime config root."""
+    if not isinstance(config_data, dict):
+        raise TypeError('config.yaml must contain a top-level mapping.')
+
+    if 'paths' not in config_data:
+        raise ConfigResolutionError("Missing required top-level config key: 'paths'")
+
+    runtime_sources = dict(_get_runtime_sources(CONFIG_PATH) if runtime_sources is None else runtime_sources)
+    resolved_config = {
+        'paths': copy.deepcopy(_require_mapping(config_data['paths'], 'config["paths"]')),
+    }
+    forced_paths = set[str]() if forced_paths is None else set(forced_paths)
+
+    for section_name in _RESOLUTION_ORDER:
+        if section_name not in config_data:
+            raise ConfigResolutionError(f'Missing required top-level config key: {section_name!r}')
+        section_cfg = copy.deepcopy(_require_mapping(config_data[section_name], f'config[{section_name!r}]'))
+        _resolve_section_runtime_values(section_name, section_cfg, resolved_config, runtime_sources, forced_paths)
+
+        current_root = dict(resolved_config)
+        current_root[section_name] = section_cfg
+        finalizer = _SECTION_FINALIZERS.get(section_name)
+        if finalizer is not None:
+            finalizer(section_cfg, current_root)
+            if _section_has_forced_values(section_name, forced_paths):
+                for output_path in _DERIVED_FORCED_OUTPUTS.get(section_name, ()): 
+                    forced_paths.add(f'{section_name}.{output_path}')
+
+        resolved_config[section_name] = section_cfg
+
+    return resolved_config
 
 
 def load_config(
@@ -1465,49 +1535,28 @@ def load_config(
     filter_by_last_name=None,
     last_name_filter_value=None,
 ) -> dict[str, Any]:
-    """Load config, optionally merge overrides, and normalize path-like fields."""
+    """Load config, apply overrides, normalize templates, and resolve script sections."""
+    override_inputs = locals().copy()
     path = Path(config_path) if config_path is not None else CONFIG_PATH
 
-    with path.open('r', encoding='utf-8') as f:
-        config_data = yaml.safe_load(f)
+    config_text = path.read_text(encoding='utf-8')
+    config_data = yaml.safe_load(config_text)
 
     if not isinstance(config_data, dict):
         raise TypeError('config.yaml must contain a top-level mapping.')
 
-    cli_overrides = {
-        'nsigma': nsigma,
-        'footprint_radius': footprint_radius,
-        'npixels': npixels,
-        'model_type': model_type,
-        'attention': attention,
-        'scaling': scaling, 
-        'loss_name': loss_name,
-        'dropout_rate': dropout_rate,
-        'output_activation': output_activation,
-        'kernel_initializer': kernel_initializer,
-        'activation_name': activation_name,
-        'discriminator_activation': discriminator_activation,
-        'discriminator_output_activation': discriminator_output_activation,
-        'filter_surveys': filter_surveys,
-        'filter_by_last_name': filter_by_last_name,
-        'last_name_filter_value': last_name_filter_value,
-    }
+    runtime_sources = _get_runtime_sources(path)
+    cli_overrides = _extract_override_values(override_inputs)
+
+    baseline_config = copy.deepcopy(config_data)
+    empty_overrides = {key: None for key in cli_overrides}
+    baseline_template_context = _build_template_context(baseline_config, empty_overrides)
+    baseline_config = _normalize_config_tree(baseline_config, baseline_template_context, 'normalized baseline config')
 
     config_data = _override_config_with_explicit_values(config_data, cli_overrides)
     template_context = _build_template_context(config_data, cli_overrides)
-    config_data = _normalize_paths(config_data, template_context)
-    config_data['paths']['models_dir'] = template_context['models_dir']
-    config_data['paths']['data_dir'] = template_context['data_dir']
-    config_data['paths']['multimodal_metrics_dir'] = template_context['multimodal_metrics_dir']
-    config_data['paths']['singlemodal_metrics_dir'] = template_context['multimodal_metrics_dir']
-    config_data['paths']['plots_dir'] = template_context['plots_dir'] 
-    #_dump_data_alias_map(config_data['paths']['models_dir'])
-    _apply_shared_runtime_bindings(config_data)
-    
-    config_data = _auto_resolve_training_entries(config_data)
-    _sync_post_training_runtime_bindings(config_data)
-    _build_evaluation_kwargs(config_data)
-    _sync_post_eval_runtime_bindings(config_data)
-    return config_data
+    config_data = _normalize_config_tree(config_data, template_context, 'normalized config')
+    forced_paths = _collect_changed_runtime_refs(baseline_config, config_data, runtime_sources)
+    return resolve_config(config_data, runtime_sources=runtime_sources, forced_paths=forced_paths)
 
 

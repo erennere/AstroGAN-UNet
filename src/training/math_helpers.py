@@ -4,6 +4,8 @@ import os
 import numpy as np
 import pandas as pd
 
+from src.config_parsing import parse_required_int
+
 
 def _row_get(row, key):
     """Read a field from either mapping-like rows or attribute-like rows."""
@@ -348,10 +350,7 @@ def create_ratios(initial_ratio, ratio_count, growth_factor):
     except (TypeError, ValueError) as err:
         raise ValueError(f'initial_ratio must be numeric, got {initial_ratio!r}') from err
 
-    try:
-        ratio_count_int = int(float(ratio_count))
-    except (TypeError, ValueError) as err:
-        raise ValueError(f'ratio_count must be numeric, got {ratio_count!r}') from err
+    ratio_count_int = parse_required_int(ratio_count, 'ratio_count')
 
     try:
         growth_factor_float = float(growth_factor)

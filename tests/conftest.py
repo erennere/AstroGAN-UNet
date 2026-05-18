@@ -156,6 +156,15 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
     metadata_csv = root / 'synthetic_metadata.csv'
     tiny_metadata_df.to_csv(metadata_csv, index=False)
 
+    train_cfg = cfg['new_train']
+    data_cfg = train_cfg['data']
+    network_cfg = train_cfg['network']
+    discriminator_cfg = train_cfg['discriminator']
+    gan_cfg = train_cfg['gan']
+    training_cfg = train_cfg['training']
+    metrics_cfg = cfg['metrics']
+    prepare_images_cfg = cfg['prepare_images']
+
     cfg['paths'].update(
         {
             'data_dir': str(root / 'data'),
@@ -171,7 +180,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
         }
     )
 
-    cfg['data'].update(
+    data_cfg.update(
         {
             'ps': 64,
             'steps': 4,
@@ -200,7 +209,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
             'min_exp_time': 20.0,
         }
     )
-    cfg['network'].update(
+    network_cfg.update(
         {
             'depth': 2,
             'kernel_size': 3,
@@ -219,7 +228,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
             'kernel_initializer': 'he_normal',
         }
     )
-    cfg['discriminator'].update(
+    discriminator_cfg.update(
         {
             'depth': 2,
             'n_initial_filters': 4,
@@ -235,7 +244,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
             'dropout_from_layer': 99,
         }
     )
-    cfg['gan'].update(
+    gan_cfg.update(
         {
             'd_learning_rate': 1e-3,
             'loss_fn': tf.keras.losses.BinaryCrossentropy(),
@@ -244,7 +253,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
             'label_smoothing': 0.0,
         }
     )
-    cfg['training'].update(
+    training_cfg.update(
         {
             'batch_size': 2,
             'use_gan': False,
@@ -286,7 +295,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
             'noisy_filtered_metadata_output_file': str(root / 'data' / 'noisy_filtered.csv'),
         }
     )
-    cfg['evaluation'].update(
+    metrics_cfg.update(
         {
             'models_dir': cfg['paths']['models_dir'],
             'patch_size': [64, 64, 1],
@@ -308,7 +317,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
             'use_mosaic': False,
         }
     )
-    cfg['evaluation']['kwargs_source'] = {
+    metrics_cfg['kwargs_source'] = {
         'sigma': 3,
         'maxiters': 5,
         'nsigma': 1.5,
@@ -331,7 +340,7 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
         'uncropped_weighting': 'average',
         'uncropped_batch_size': 2,
         'sigma_key': 'bkg_sigma',
-        'noise_fn': cfg['data']['noise_fn'],
+        'noise_fn': data_cfg['noise_fn'],
         'type_of_image': 'SCI',
         'nan_value': 0.0,
         'posinf_value': 0.0,
@@ -353,39 +362,39 @@ def mock_cfg(tmp_path_factory: pytest.TempPathFactory, tiny_metadata_df: pd.Data
         'clean': True,
         'clean_param': 1.0,
     }
-    cfg['visualization']['prepare_images']['scaling'] = cfg['training']['scaling']
-    cfg['visualization']['prepare_images']['metadata_filepath'] = str(metadata_csv)
-    cfg['training']['data_kwargs'] = copy.deepcopy(cfg['data'])
-    cfg['training']['network_kwargs'] = copy.deepcopy(cfg['network'])
-    cfg['training']['discriminator_kwargs'] = copy.deepcopy(cfg['discriminator'])
-    cfg['training']['gan_kwargs'] = copy.deepcopy(cfg['gan'])
+    prepare_images_cfg['scaling'] = training_cfg['scaling']
+    prepare_images_cfg['metadata_filepath'] = str(metadata_csv)
+    training_cfg['data_kwargs'] = copy.deepcopy(data_cfg)
+    training_cfg['network_kwargs'] = copy.deepcopy(network_cfg)
+    training_cfg['discriminator_kwargs'] = copy.deepcopy(discriminator_cfg)
+    training_cfg['gan_kwargs'] = copy.deepcopy(gan_cfg)
     cfg['model_type'] = 'unet'
     cfg['input_shape'] = (64, 64, 1)
     cfg['checkpoint_info'] = {
         'model_type': 'UNET',
-        'scaling': cfg['training']['scaling'],
-        'config': {'training': {'scaling': cfg['training']['scaling']}},
+        'scaling': training_cfg['scaling'],
+        'config': {'training': {'scaling': training_cfg['scaling']}},
     }
     return cfg
 
 
 @pytest.fixture
 def tiny_unet(mock_cfg: dict) -> tf.keras.Model:
-    model = network(mock_cfg['input_shape'], **mock_cfg['training']['network_kwargs'])
+    model = network(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['network_kwargs'])
     model.compile(
-        optimizer=_instantiate_optimizer(mock_cfg['training']['optimizer'], {'learning_rate': mock_cfg['training']['learning_rate']}),
-        loss=mock_cfg['training']['g_loss_fn'],
+        optimizer=_instantiate_optimizer(mock_cfg['new_train']['training']['optimizer'], {'learning_rate': mock_cfg['new_train']['training']['learning_rate']}),
+        loss=mock_cfg['new_train']['training']['g_loss_fn'],
     )
     return model
 
 
 @pytest.fixture
 def tiny_discriminator(mock_cfg: dict) -> tf.keras.Model:
-    return get_discriminator(mock_cfg['input_shape'], **mock_cfg['training']['discriminator_kwargs'])
+    return get_discriminator(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['discriminator_kwargs'])
 
 
 @pytest.fixture
-def tiny_gan(tiny_unet: tf.keras.Model, tiny_discriminator: tf.keras.Model, mock_cfg: dict) -> GAN:
+def tiny_gan(tiny_unet: tf.keras.Model, tiny_discriminator: tf.keras.Model, mock_cfg: dict) -> tf.keras.Model:
     model = GAN(
         generator=tiny_unet,
         discriminator=tiny_discriminator,
@@ -393,8 +402,8 @@ def tiny_gan(tiny_unet: tf.keras.Model, tiny_discriminator: tf.keras.Model, mock
         d_optimizer=tf.keras.optimizers.Adam(1e-3),
         adversarial_loss_fn=tf.keras.losses.BinaryCrossentropy(),
         reconstruction_loss_fn=tf.keras.losses.MeanAbsoluteError(),
-        adversarial_loss_weight=mock_cfg['gan']['adversarial_loss_weight'],
-        reconstruction_loss_weight=mock_cfg['gan']['reconstruction_loss_weight'],
+        adversarial_loss_weight=mock_cfg['new_train']['gan']['adversarial_loss_weight'],
+        reconstruction_loss_weight=mock_cfg['new_train']['gan']['reconstruction_loss_weight'],
         label_smoothing=0.0,
         name='tiny_gan',
     )

@@ -150,17 +150,15 @@ def test_prepare_paired_panel_explicit_shared_and_separate_mask_branches(monkeyp
 @pytest.mark.unit
 def test_prepare_plots_module_main_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     cfg = {
-        'visualization': {
-            'prepare_plots': {
-                'output_dir': str(tmp_path / 'out_main_guard'),
-                'uncropped_output_dir': str(tmp_path),
-                'photometrical_data_filename': 'missing.parquet',
-                'uncropped_results_csv': 'metrics.csv',
-                'metadata_filepath': str(tmp_path / 'meta.csv'),
-                'rec_cmap': 'viridis',
-                'noise_cmap': 'plasma',
-                'norm_quantiles': [5, 95],
-            }
+        'prepare_plots': {
+            'output_dir': str(tmp_path / 'out_main_guard'),
+            'uncropped_output_dir': str(tmp_path),
+            'photometrical_data_filename': 'missing.parquet',
+            'uncropped_results_csv': 'metrics.csv',
+            'metadata_filepath': str(tmp_path / 'meta.csv'),
+            'rec_cmap': 'viridis',
+            'noise_cmap': 'plasma',
+            'norm_quantiles': [5, 95],
         }
     }
 
@@ -219,36 +217,34 @@ def test_create_flux_flux_error_diagram_skips_empty_positive_flux(tmp_path: Path
 @pytest.mark.unit
 def test_prepare_plots_main_validation_and_error_catch_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base_cfg = {
-        'visualization': {
-            'prepare_plots': {
-                'output_dir': str(tmp_path / 'out'),
-                'uncropped_output_dir': str(tmp_path),
-                'photometrical_data_filename': 'data.parquet',
-                'uncropped_results_csv': 'metrics.csv',
-                'metadata_filepath': str(tmp_path / 'meta.csv'),
-                'rec_cmap': 'viridis',
-                'noise_cmap': 'plasma',
-                'norm_quantiles': [5, 95],
-            }
+        'prepare_plots': {
+            'output_dir': str(tmp_path / 'out'),
+            'uncropped_output_dir': str(tmp_path),
+            'photometrical_data_filename': 'data.parquet',
+            'uncropped_results_csv': 'metrics.csv',
+            'metadata_filepath': str(tmp_path / 'meta.csv'),
+            'rec_cmap': 'viridis',
+            'noise_cmap': 'plasma',
+            'norm_quantiles': [5, 95],
         }
     }
 
     monkeypatch.setattr(plots_mod, 'parse_config_overrides', lambda: {})
 
     bad_len = {**base_cfg}
-    bad_len['visualization'] = {'prepare_plots': {**base_cfg['visualization']['prepare_plots'], 'norm_quantiles': [5]}}
+    bad_len['prepare_plots'] = {**base_cfg['prepare_plots'], 'norm_quantiles': [5]}
     monkeypatch.setattr(plots_mod, 'load_config', lambda **kwargs: bad_len)
     with pytest.raises(ValueError):
         plots_mod.main()
 
     bad_order = {**base_cfg}
-    bad_order['visualization'] = {'prepare_plots': {**base_cfg['visualization']['prepare_plots'], 'norm_quantiles': [95, 5]}}
+    bad_order['prepare_plots'] = {**base_cfg['prepare_plots'], 'norm_quantiles': [95, 5]}
     monkeypatch.setattr(plots_mod, 'load_config', lambda **kwargs: bad_order)
     with pytest.raises(ValueError):
         plots_mod.main()
 
     bad_range = {**base_cfg}
-    bad_range['visualization'] = {'prepare_plots': {**base_cfg['visualization']['prepare_plots'], 'norm_quantiles': [-1, 95]}}
+    bad_range['prepare_plots'] = {**base_cfg['prepare_plots'], 'norm_quantiles': [-1, 95]}
     monkeypatch.setattr(plots_mod, 'load_config', lambda **kwargs: bad_range)
     with pytest.raises(ValueError):
         plots_mod.main()
@@ -266,17 +262,15 @@ def test_prepare_plots_main_catches_render_and_snr_exceptions(tmp_path: Path, mo
     parquet_path.write_text('x', encoding='utf-8')
 
     cfg = {
-        'visualization': {
-            'prepare_plots': {
-                'output_dir': str(tmp_path / 'out'),
-                'uncropped_output_dir': str(tmp_path),
-                'photometrical_data_filename': parquet_path.name,
-                'uncropped_results_csv': 'metrics.csv',
-                'metadata_filepath': str(tmp_path / 'meta.csv'),
-                'rec_cmap': 'viridis',
-                'noise_cmap': 'plasma',
-                'norm_quantiles': [5, 95],
-            }
+        'prepare_plots': {
+            'output_dir': str(tmp_path / 'out'),
+            'uncropped_output_dir': str(tmp_path),
+            'photometrical_data_filename': parquet_path.name,
+            'uncropped_results_csv': 'metrics.csv',
+            'metadata_filepath': str(tmp_path / 'meta.csv'),
+            'rec_cmap': 'viridis',
+            'noise_cmap': 'plasma',
+            'norm_quantiles': [5, 95],
         }
     }
 
@@ -308,4 +302,4 @@ def test_prepare_plots_main_catches_render_and_snr_exceptions(tmp_path: Path, mo
     monkeypatch.setattr(plots_mod, 'create_flux_flux_error_diagram', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('snr fail')))
 
     plots_mod.main()
-    assert (Path(cfg['visualization']['prepare_plots']['output_dir']) / 'all_metrics.csv').exists()
+    assert (Path(cfg['prepare_plots']['output_dir']) / 'all_metrics.csv').exists()

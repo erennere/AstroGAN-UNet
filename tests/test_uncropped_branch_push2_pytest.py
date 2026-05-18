@@ -172,7 +172,7 @@ def test_uncropped_module_main_guard_executes(monkeypatch: pytest.MonkeyPatch, t
         starter,
         'load_config',
         lambda **kwargs: {
-            'evaluation': {
+            'uncropped_metrics': {
                 'data_kwargs': {
                     'kwargs_data': {'low': 1.0}
                 },

@@ -124,7 +124,7 @@ def test_evaluation_pipeline_chain_can_merge_and_roundtrip_parquet(tmp_path: Pat
         tf.keras.layers.Conv2D(1, 1, activation='linear', kernel_initializer=tf.keras.initializers.Constant(0.9), bias_initializer='zeros'),
     ])
     reconstructed = sliding_window_inference(image, model, patch_size=(32, 32, 1), stride=(16, 16, 1), weighting='average', batch_size=4)
-    kwargs = dict(mock_cfg['evaluation']['kwargs_source'])
+    kwargs = dict(mock_cfg['metrics']['kwargs_source'])
 
     org_result = detect_sources_in_image(tiny_fits_array, kwargs)
     noisy_result = detect_sources_in_image((tiny_fits_array + np.random.default_rng(11).normal(0, 0.1, tiny_fits_array.shape)).astype(np.float32), kwargs)

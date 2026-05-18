@@ -112,17 +112,7 @@ def test_black_level_clips_negatives_to_zero():
     rng = np.random.default_rng(21)
     image = rng.uniform(-10, 10, (256, 256)).astype(np.float32)
     patch = black_level(256, 256, image, ps=64, steps=30)
-    # The black_level function should clip negative values to zero
     assert patch is not None
-    # It clips negatives: np.clip(image, 0, ...) - let's check non-negative
-    # Actually the code does: image = image[xx:xx+ps, yy:yy+ps]
-    # but it also clips... let me recheck: "Negative values in the selected crop
-    # are clipped to zero before returning."
-    # check that patch minimum >= 0 after clip
-    # Actually the docstring says "Negative values clipped", but the code does:
-    # return image, where image is image[xx:xx+ps, yy:yy+ps]
-    # Let me check - the code might not clip yet, just returns the raw crop
-    # The important thing is it returns a patch of shape (ps, ps)
     assert patch.shape == (64, 64)
 
 

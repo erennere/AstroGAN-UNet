@@ -3,7 +3,7 @@
 import os, logging, json, sys, inspect
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
+from typing import Any, cast
 import numpy as np
 import pandas as pd
 
@@ -11,7 +11,6 @@ import pandas as pd
 os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
 
 import tensorflow as tf
-from tensorflow.keras.optimizers import Adam
 from astropy.io import fits
 from src.models.network import network, GAN, get_discriminator
 from src.training.callback import Callback
@@ -29,6 +28,7 @@ from src.training.utils import (
 from src.training.math_helpers import (
     apply_scaling_and_stats,
 )
+from src.config_parsing import parse_required_int
 from starter import load_config, parse_config_overrides  #sym:parse_config_overrides
 
 MEM_CACHED = None
@@ -484,8 +484,8 @@ def data_augment_pluggable(images, kwargs_data, scaling=None):
     high = float(kwargs_data['high'])
     training = kwargs_data['training']
     test = kwargs_data.get('test', False)
-    samples = int(float(kwargs_data['samples']))
-    val_samples = int(float(kwargs_data['val_samples']))
+    samples = parse_required_int(kwargs_data['samples'], 'data.samples')
+    val_samples = parse_required_int(kwargs_data['val_samples'], 'data.val_samples')
 
     candidates_fn = kwargs_data['candidates_fn']
     post_filter_fn = kwargs_data['post_filter_fn']
@@ -501,7 +501,7 @@ def data_augment_pluggable(images, kwargs_data, scaling=None):
     preprocess_posinf_value = kwargs_data['posinf_value']
     preprocess_neginf_value = kwargs_data['neginf_value']
     sigma_key = kwargs_data['sigma_key']
-    max_workers = kwargs_data.get('max_workers', 8)
+    max_workers = kwargs_data['max_workers']
 
     fit_data = None
     if kwargs_data.get('sigma_kernel_requires_fit_data', False):
@@ -538,7 +538,7 @@ def data_augment_pluggable(images, kwargs_data, scaling=None):
             info.extend(candidates_fn(row, kwargs_data))
         info = pd.DataFrame(info).dropna()
         info = post_filter_fn(info, kwargs_data)
-        x = min(int(float(kwargs_data['test_samples'])), len(info)) if test else min(samples if training else val_samples, len(info))
+        x = min(parse_required_int(kwargs_data['test_samples'], 'data.test_samples'), len(info)) if test else min(samples if training else val_samples, len(info))
 
         logging.info('data_augment_pluggable: %d candidates after post-filter; sampling %d (training=%s).', len(info), x, training)
 
@@ -613,7 +613,7 @@ def data_augment_pluggable(images, kwargs_data, scaling=None):
 
 ################TRAIN THE MODEL ################################
 def train_network(input_shape, n_epochs, kwargs_data, kwargs_network, data_generator, batch_size=32,
-         optimizer=Adam, change_learning_rate=[(0, 1e-4), (2000, 1e-5)], G_loss_fn: Any = tf.keras.losses.MeanAbsoluteError(),
+         optimizer=tf.keras.optimizers.Adam, change_learning_rate=[(0, 1e-4), (2000, 1e-5)], G_loss_fn: Any = tf.keras.losses.MeanAbsoluteError(),
          learning_rate=None, beta_1=None,
          start_from_best=False, start_from_last=True,
          save_freq=500, eval_save_percentage=20, ds_save_percentage=30, scaling=None,
@@ -767,7 +767,7 @@ def train_network(input_shape, n_epochs, kwargs_data, kwargs_network, data_gener
         train_model.compile()
         callback_optimizer = train_model.g_optimizer
     else:
-        generator.compile(optimizer=optimizer, loss=G_loss_fn)
+        generator.compile(optimizer=optimizer, loss=cast(Any, G_loss_fn))
         train_model = generator
         callback_optimizer = optimizer
         logging.info('Configured generator-only training mode (no discriminator).')
@@ -857,7 +857,8 @@ def main():
     config_values = load_config(**overrides)
     logging.info('Loaded configuration and switched cwd to project root.')
 
-    training_config = dict(config_values['training'])
+    train_cfg = config_values['new_train']
+    training_config = dict(train_cfg['training'])
     data_config = dict(training_config['data_kwargs'])
     network_config = dict(training_config['network_kwargs'])
     discriminator_config = dict(training_config['discriminator_kwargs'])
@@ -892,7 +893,7 @@ def main():
         training_history_json_path=training_config['training_history_json_path'],
         validation_loss_filename=training_config['validation_loss_filename'],
         training_metrics_filename=training_config['training_metrics_filename'],
-        config=config_values,
+        config=train_cfg,
     )
     
 if __name__ == "__main__":

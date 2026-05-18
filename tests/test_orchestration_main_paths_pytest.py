@@ -272,26 +272,24 @@ def test_prepare_images_main_executes_pipeline(monkeypatch: pytest.MonkeyPatch, 
     ).to_csv(metadata_path, index=False)
 
     cfg = {
-        'visualization': {
-            'prepare_images': {
-                'data_kwargs': {'ratio_initial': 2, 'ratio_count': 1, 'ratio_growth': 1, 'type_of_image': 'SCI'},
-                'output_dir': str(tmp_path / 'out'),
-                'low': 1,
-                'metadata_filepath': str(metadata_path),
-                'dataset': 'dataset',
-                'sample_n': 1,
-                'ps': 16,
-                'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
-                'exp_column': 'exp_time',
-                'targ_col': 'target',
-                'type_of_image': 'SCI',
-                'ratio_initial': 2,
-                'ratio_count': 1,
-                'ratio_growth': 1,
-                'model_dir': 'models',
-                'model_prototype': '*.keras',
-                'scaling': 'min_max',
-            }
+        'prepare_images': {
+            'data_kwargs': {'ratio_initial': 2, 'ratio_count': 1, 'ratio_growth': 1, 'type_of_image': 'SCI'},
+            'output_dir': str(tmp_path / 'out'),
+            'low': 1,
+            'metadata_filepath': str(metadata_path),
+            'dataset': 'dataset',
+            'sample_n': 1,
+            'ps': 16,
+            'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
+            'exp_column': 'exp_time',
+            'targ_col': 'target',
+            'type_of_image': 'SCI',
+            'ratio_initial': 2,
+            'ratio_count': 1,
+            'ratio_growth': 1,
+            'model_dir': 'models',
+            'model_prototype': '*.keras',
+            'scaling': 'min_max',
         }
     }
 
@@ -459,32 +457,34 @@ def test_create_dataset_main_delegates_to_control_flow(monkeypatch: pytest.Monke
 def test_new_train_main_delegates_to_train_network(monkeypatch: pytest.MonkeyPatch):
     calls = []
     cfg = {
-        'training': {
-            'patch_size': [16, 16, 1],
-            'n_epochs': 1,
-            'data_kwargs': {'training_path': 'train', 'eval_path': 'eval', 'results_path': 'results'},
-            'network_kwargs': {},
-            'discriminator_kwargs': {},
-            'gan_kwargs': {},
-            'data_generator': 'prepare_data',
-            'batch_size': 2,
-            'optimizer': 'adam',
-            'change_learning_rate': False,
-            'g_loss_fn': 'mse',
-            'learning_rate': 1e-3,
-            'beta_1': 0.9,
-            'start_from_best': False,
-            'start_from_last': False,
-            'save_freq': 1,
-            'eval_save_percentage': 0.5,
-            'ds_save_percentage': 0.5,
-            'scaling': 'min_max',
-            'use_gan': False,
-            'training_results_dir': 'results',
-            'training_metrics_csv_path': 'metrics.csv',
-            'training_history_json_path': 'history.json',
-            'validation_loss_filename': 'val.png',
-            'training_metrics_filename': 'train.png',
+        'new_train': {
+            'training': {
+                'patch_size': [16, 16, 1],
+                'n_epochs': 1,
+                'data_kwargs': {'training_path': 'train', 'eval_path': 'eval', 'results_path': 'results'},
+                'network_kwargs': {},
+                'discriminator_kwargs': {},
+                'gan_kwargs': {},
+                'data_generator': 'prepare_data',
+                'batch_size': 2,
+                'optimizer': 'adam',
+                'change_learning_rate': False,
+                'g_loss_fn': 'mse',
+                'learning_rate': 1e-3,
+                'beta_1': 0.9,
+                'start_from_best': False,
+                'start_from_last': False,
+                'save_freq': 1,
+                'eval_save_percentage': 0.5,
+                'ds_save_percentage': 0.5,
+                'scaling': 'min_max',
+                'use_gan': False,
+                'training_results_dir': 'results',
+                'training_metrics_csv_path': 'metrics.csv',
+                'training_history_json_path': 'history.json',
+                'validation_loss_filename': 'val.png',
+                'training_metrics_filename': 'train.png',
+            }
         }
     }
 

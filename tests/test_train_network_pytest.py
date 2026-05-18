@@ -27,7 +27,7 @@ def test_train_network_runs_generator_only_path(tmp_path: Path, mock_cfg, tiny_u
     (train_dir / 'sample_train.fits').write_text('train', encoding='utf-8')
     (eval_dir / 'sample_eval.fits').write_text('eval', encoding='utf-8')
 
-    data_cfg = dict(mock_cfg['data'])
+    data_cfg = dict(mock_cfg['new_train']['data'])
     data_cfg.update(
         {
             'training_path': str(train_dir),
@@ -62,7 +62,7 @@ def test_train_network_runs_generator_only_path(tmp_path: Path, mock_cfg, tiny_u
         input_shape=(64, 64, 1),
         n_epochs=1,
         kwargs_data=data_cfg,
-        kwargs_network=dict(mock_cfg['training']['network_kwargs']),
+        kwargs_network=dict(mock_cfg['new_train']['training']['network_kwargs']),
         data_generator=lambda *args, **kwargs: None,
         batch_size=1,
         optimizer=tf.keras.optimizers.Adam,
@@ -84,7 +84,7 @@ def test_train_network_runs_generator_only_path(tmp_path: Path, mock_cfg, tiny_u
         training_history_json_path=str(tmp_path / 'train_results' / 'history.json'),
         validation_loss_filename='validation_loss.txt',
         training_metrics_filename='training_metrics.txt',
-        config=mock_cfg,
+        config=mock_cfg['new_train'],
     )
 
     assert (tmp_path / 'train_results' / 'history.json').exists()
@@ -104,7 +104,7 @@ def test_train_network_runs_gan_path_with_dummy_gan(tmp_path: Path, mock_cfg, ti
     (train_dir / 'sample_train.fits').write_text('train', encoding='utf-8')
     (eval_dir / 'sample_eval.fits').write_text('eval', encoding='utf-8')
 
-    data_cfg = dict(mock_cfg['data'])
+    data_cfg = dict(mock_cfg['new_train']['data'])
     data_cfg.update(
         {
             'training_path': str(train_dir),
@@ -162,7 +162,7 @@ def test_train_network_runs_gan_path_with_dummy_gan(tmp_path: Path, mock_cfg, ti
         input_shape=(64, 64, 1),
         n_epochs=1,
         kwargs_data=data_cfg,
-        kwargs_network=dict(mock_cfg['training']['network_kwargs']),
+        kwargs_network=dict(mock_cfg['new_train']['training']['network_kwargs']),
         data_generator=lambda *args, **kwargs: None,
         batch_size=1,
         optimizer=tf.keras.optimizers.Adam,
@@ -189,7 +189,7 @@ def test_train_network_runs_gan_path_with_dummy_gan(tmp_path: Path, mock_cfg, ti
         training_history_json_path=str(tmp_path / 'train_results_gan' / 'history.json'),
         validation_loss_filename='validation_loss.txt',
         training_metrics_filename='training_metrics.txt',
-        config=mock_cfg,
+        config=mock_cfg['new_train'],
     )
 
     assert (tmp_path / 'train_results_gan' / 'history.json').exists()

@@ -447,17 +447,15 @@ def test_prepare_plots_main_runs_with_mocked_dependencies(tmp_path: Path, monkey
     pd.DataFrame({'dummy': [1]}).to_parquet(raw_parquet, index=False)
 
     cfg = {
-        'visualization': {
-            'prepare_plots': {
-                'output_dir': str(output_dir),
-                'uncropped_output_dir': str(uncropped_dir),
-                'photometrical_data_filename': 'photometry.parquet',
-                'uncropped_results_csv': 'metrics.csv',
-                'metadata_filepath': str(tmp_path / 'metadata.csv'),
-                'rec_cmap': 'viridis',
-                'noise_cmap': 'plasma',
-                'norm_quantiles': [5, 95],
-            }
+        'prepare_plots': {
+            'output_dir': str(output_dir),
+            'uncropped_output_dir': str(uncropped_dir),
+            'photometrical_data_filename': 'photometry.parquet',
+            'uncropped_results_csv': 'metrics.csv',
+            'metadata_filepath': str(tmp_path / 'metadata.csv'),
+            'rec_cmap': 'viridis',
+            'noise_cmap': 'plasma',
+            'norm_quantiles': [5, 95],
         }
     }
 

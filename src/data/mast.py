@@ -489,9 +489,12 @@ def main():
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     overrides = parse_config_overrides()  # parses sys.argv by default
     root_cfg = load_config(**overrides)
-    if not isinstance(root_cfg, dict) or not isinstance(root_cfg.get('mast'), dict):
-        logging.error("Missing required 'mast' section in config.yaml")
-        return
+    if not isinstance(root_cfg, dict):
+        raise TypeError('Loaded config must be a mapping.')
+    if 'mast' not in root_cfg:
+        raise KeyError("Missing required top-level config section: 'mast'")
+    if not isinstance(root_cfg['mast'], dict):
+        raise TypeError("config['mast'] must be a mapping.")
 
     cfg = dict(root_cfg['mast'])
     required_keys = [

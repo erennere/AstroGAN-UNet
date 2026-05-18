@@ -8,6 +8,7 @@ import zlib
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -93,11 +94,11 @@ def test_decode_models_dir_invalid_input():
 @pytest.mark.unit
 def test_optional_parse_helpers_error_paths():
     with pytest.raises(ValueError):
-        starter._parse_optional_int('x', 'nsigma')
+        starter.parse_optional_int('x', 'nsigma')
     with pytest.raises(ValueError):
-        starter._parse_optional_float('x', 'dropout_rate')
+        starter.parse_optional_float('x', 'dropout_rate')
     with pytest.raises(ValueError):
-        starter._parse_optional_bool('maybe', 'attention')
+        starter.parse_optional_bool('maybe', 'attention')
 
 
 @pytest.mark.unit
@@ -158,7 +159,6 @@ def test_checkpoint_binding_validation_errors(monkeypatch: pytest.MonkeyPatch):
             'checkpoint_custom_epoch': None,
         },
         'data': {},
-        'runtime': {},
     }
     with pytest.raises(TypeError):
         starter._validate_and_sync_checkpoint_config(cfg)
@@ -169,23 +169,43 @@ def test_checkpoint_binding_validation_errors(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.unit
-def test_bind_nested_shared_value_rejects_non_mapping():
-    cfg = {'section': {'sub': 'bad'}, 'runtime': {}}
-    with pytest.raises(TypeError):
-        starter._bind_nested_shared_value(
-            cfg,
-            'section',
-            'sub',
-            'k',
-            1,
-            group_name='paths',
-            policy={'prefer_explicit_values': True},
-            source_path='x',
-        )
+def test_resolve_config_rejects_missing_runtime_placeholder_key():
+    cfg = {
+        'paths': {},
+        'mast': {'id_column': 'owner_dataset'},
+        'create_dataset': {},
+        'new_train': {'data': {}, 'network': {}, 'discriminator': {}, 'gan': {}, 'training': {}},
+        'metrics': {},
+        'uncropped_metrics': {},
+        'merge_catalogs': {},
+        'prepare_images': {},
+        'prepare_plots': {},
+    }
+    with pytest.raises(starter.ConfigResolutionError):
+        starter.resolve_config(cfg, runtime_sources={'create_dataset.dataset': ('mast.id_column',)})
 
 
 @pytest.mark.unit
-def test_get_shared_binding_policy_non_dict_defaults():
-    cfg = {'shared_bindings': 'bad'}
-    policy = starter._get_shared_binding_policy(cfg)
-    assert policy['prefer_explicit_values'] is True
+def test_resolve_config_rejects_missing_top_level_sections():
+    with pytest.raises(starter.ConfigResolutionError):
+        starter.resolve_config({'paths': {}})
+
+
+@pytest.mark.unit
+def test_resolve_config_uses_local_non_null_value_and_fills_null_runtime_values():
+    with open(REPO_ROOT / 'config.yaml', 'r', encoding='utf-8') as handle:
+        cfg = yaml.safe_load(handle)
+
+    cfg['mast']['id_column'] = 'owner_dataset'
+    cfg['mast']['main_column'] = 'owner_exposure'
+    cfg['create_dataset']['dataset'] = 'manual_dataset'
+    cfg['create_dataset']['exposure_col'] = None
+    cfg['create_dataset']['id_column'] = None
+    cfg['create_dataset']['exp_column'] = None
+
+    resolved = starter.resolve_config(cfg)
+
+    assert resolved['create_dataset']['dataset'] == 'manual_dataset'
+    assert resolved['create_dataset']['exposure_col'] == 'owner_exposure'
+    assert resolved['create_dataset']['id_column'] == 'owner_dataset'
+    assert resolved['create_dataset']['exp_column'] == 'owner_exposure'

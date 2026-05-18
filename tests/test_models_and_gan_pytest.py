@@ -89,8 +89,8 @@ def test_gan_train_step_returns_expected_metrics(tiny_gan):
 def test_gan_generator_loss_changes_with_reconstruction_weight(mock_cfg):
     x = tf.random.uniform((2, 64, 64, 1), seed=11)
     y = tf.random.uniform((2, 64, 64, 1), seed=12)
-    base_generator = network(mock_cfg['input_shape'], **mock_cfg['training']['network_kwargs'])
-    base_discriminator = get_discriminator(mock_cfg['input_shape'], **mock_cfg['training']['discriminator_kwargs'])
+    base_generator = network(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['network_kwargs'])
+    base_discriminator = get_discriminator(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['discriminator_kwargs'])
     _ = base_generator(x)
     _ = base_discriminator(y)
 
@@ -193,8 +193,8 @@ def test_discriminator_defaults_func_kwargs_none_path():
 
 @pytest.mark.unit
 def test_gan_train_step_without_reconstruction_loss_sets_zero_rec_term(mock_cfg):
-    generator = network(mock_cfg['input_shape'], **mock_cfg['training']['network_kwargs'])
-    discriminator = get_discriminator(mock_cfg['input_shape'], **mock_cfg['training']['discriminator_kwargs'])
+    generator = network(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['network_kwargs'])
+    discriminator = get_discriminator(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['discriminator_kwargs'])
     gan = GAN(
         generator=generator,
         discriminator=discriminator,

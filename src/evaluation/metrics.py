@@ -2345,7 +2345,7 @@ if __name__ == '__main__':
     concurrent_workers = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].lstrip('-').isdigit() else 1
     overrides = parse_config_overrides(start_index=3)  # sys.argv[1]=index, sys.argv[2]=concurrent_workers, flags start at 3
     cfg = load_config(**overrides)
-    eval_cfg = cfg['evaluation']
+    eval_cfg = cfg['metrics']
 
     main(eval_cfg['models_dir'],
          eval_cfg['data_kwargs'], eval_cfg['model_kwargs'], eval_cfg['kwargs_source'],

@@ -80,26 +80,24 @@ def test_plot_source_comparison_sep_validation_and_coordinate_skip(monkeypatch: 
 @pytest.mark.unit
 def test_main_missing_metadata_and_none_metadata_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     missing_cfg = {
-        'visualization': {
-            'prepare_images': {
-                'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
-                'output_dir': str(tmp_path / 'out'),
-                'low': 1,
-                'metadata_filepath': str(tmp_path / 'missing.csv'),
-                'dataset': 'dataset',
-                'sample_n': 1,
-                'ps': 8,
-                'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
-                'exp_column': 'exp_time',
-                'targ_col': 'target',
-                'type_of_image': 'SCI',
-                'ratio_initial': 2,
-                'ratio_count': 1,
-                'ratio_growth': 1,
-                'model_dir': 'models',
-                'model_prototype': '*.keras',
-                'scaling': 'min_max',
-            }
+        'prepare_images': {
+            'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
+            'output_dir': str(tmp_path / 'out'),
+            'low': 1,
+            'metadata_filepath': str(tmp_path / 'missing.csv'),
+            'dataset': 'dataset',
+            'sample_n': 1,
+            'ps': 8,
+            'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
+            'exp_column': 'exp_time',
+            'targ_col': 'target',
+            'type_of_image': 'SCI',
+            'ratio_initial': 2,
+            'ratio_count': 1,
+            'ratio_growth': 1,
+            'model_dir': 'models',
+            'model_prototype': '*.keras',
+            'scaling': 'min_max',
         }
     }
 
@@ -111,26 +109,24 @@ def test_main_missing_metadata_and_none_metadata_paths(tmp_path: Path, monkeypat
     prep_images_mod.main()
 
     none_meta_cfg = {
-        'visualization': {
-            'prepare_images': {
-                'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
-                'output_dir': str(tmp_path / 'out2'),
-                'low': 1,
-                'metadata_filepath': None,
-                'dataset': 'dataset',
-                'sample_n': 1,
-                'ps': 8,
-                'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
-                'exp_column': 'exp_time',
-                'targ_col': 'target',
-                'type_of_image': 'SCI',
-                'ratio_initial': 2,
-                'ratio_count': 1,
-                'ratio_growth': 1,
-                'model_dir': 'models',
-                'model_prototype': '*.keras',
-                'scaling': 'min_max',
-            }
+        'prepare_images': {
+            'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
+            'output_dir': str(tmp_path / 'out2'),
+            'low': 1,
+            'metadata_filepath': None,
+            'dataset': 'dataset',
+            'sample_n': 1,
+            'ps': 8,
+            'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
+            'exp_column': 'exp_time',
+            'targ_col': 'target',
+            'type_of_image': 'SCI',
+            'ratio_initial': 2,
+            'ratio_count': 1,
+            'ratio_growth': 1,
+            'model_dir': 'models',
+            'model_prototype': '*.keras',
+            'scaling': 'min_max',
         }
     }
 
@@ -234,26 +230,24 @@ def test_compare_images_shape_mismatch_and_source_exception_and_tree_exception()
 @pytest.mark.unit
 def test_prepare_images_module_main_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     cfg = {
-        'visualization': {
-            'prepare_images': {
-                'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
-                'output_dir': str(tmp_path / 'out_main_guard'),
-                'low': 1,
-                'metadata_filepath': str(tmp_path / 'missing_from_main_guard.csv'),
-                'dataset': 'dataset',
-                'sample_n': 1,
-                'ps': 8,
-                'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
-                'exp_column': 'exp_time',
-                'targ_col': 'target',
-                'type_of_image': 'SCI',
-                'ratio_initial': 2,
-                'ratio_count': 1,
-                'ratio_growth': 1,
-                'model_dir': 'models',
-                'model_prototype': '*.keras',
-                'scaling': 'min_max',
-            }
+        'prepare_images': {
+            'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
+            'output_dir': str(tmp_path / 'out_main_guard'),
+            'low': 1,
+            'metadata_filepath': str(tmp_path / 'missing_from_main_guard.csv'),
+            'dataset': 'dataset',
+            'sample_n': 1,
+            'ps': 8,
+            'kwargs_source': {'distance_threshold': 2.0, 'func': object()},
+            'exp_column': 'exp_time',
+            'targ_col': 'target',
+            'type_of_image': 'SCI',
+            'ratio_initial': 2,
+            'ratio_count': 1,
+            'ratio_growth': 1,
+            'model_dir': 'models',
+            'model_prototype': '*.keras',
+            'scaling': 'min_max',
         }
     }
 

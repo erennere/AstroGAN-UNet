@@ -487,7 +487,7 @@ def test_condition_and_module_main_guard(monkeypatch: pytest.MonkeyPatch):
         starter,
         'load_config',
         lambda **kwargs: {
-            'evaluation': {
+            'metrics': {
                 'models_dir': 'models',
                 'data_kwargs': {},
                 'model_kwargs': {},

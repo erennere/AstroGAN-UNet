@@ -222,7 +222,7 @@ def _run_from_config(eval_cfg):
     org_filepath = os.path.join(file_dir, org_filename)
     photometrical_data_filepath = os.path.join(file_dir, photometrical_data_filename)
 
-    workers = int(eval_cfg.get('merge_catalog_workers', eval_cfg['workers']))
+    workers = int(eval_cfg['merge_catalog_workers'])
     threshold = float(eval_cfg['merge_catalog_threshold'])
 
     process(
@@ -238,4 +238,4 @@ if __name__ == '__main__':
     """CLI entrypoint using the shared config loader and override parser."""
     overrides = parse_config_overrides()
     cfg = load_config(**overrides)
-    _run_from_config(cfg['evaluation'])
+    _run_from_config(cfg['merge_catalogs'])

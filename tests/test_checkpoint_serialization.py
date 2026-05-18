@@ -30,7 +30,7 @@ class CheckpointSerializationTests(unittest.TestCase):
 
     def _config(self, **overrides):
         cfg = load_config(**overrides)
-        training_cfg = dict(cfg['training'])
+        training_cfg = dict(cfg['new_train']['training'])
         network_cfg = dict(training_cfg['network_kwargs'])
         discriminator_cfg = dict(training_cfg['discriminator_kwargs'])
         gan_cfg = dict(training_cfg['gan_kwargs'])

@@ -130,9 +130,9 @@ def test_decode_models_dir_dropout_non_float_path(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.unit
 def test_parse_helpers_and_formatter_and_runtime_resolvers_misc_paths():
-    assert starter._parse_optional_float(None, 'x') is None
-    assert starter._parse_optional_bool(None, 'x') is None
-    assert starter._parse_optional_bool(True, 'x') is True
+    assert starter.parse_optional_float(None, 'x') is None
+    assert starter.parse_optional_bool(None, 'x') is None
+    assert starter.parse_optional_bool(True, 'x') is True
 
     formatted = starter._format_with_known_templates('{v!a}-{v!q}', {'v': 'x'})
     assert formatted.startswith("'x'-")
@@ -152,11 +152,11 @@ def test_resolve_initializer_and_data_strategy_passthrough(monkeypatch: pytest.M
 
 
 @pytest.mark.unit
-def test_build_evaluation_kwargs_use_custom_test_images_path_assignment():
+def test_finalize_metrics_section_use_custom_test_images_path_assignment():
     cfg = starter.load_config()
-    cfg['evaluation']['use_custom_test_images'] = True
-    starter._build_evaluation_kwargs(cfg)
-    assert cfg['evaluation']['data_kwargs']['kwargs_data']['metadata_filepath'] == cfg['create_dataset']['noisy_filtered_metadata_output_file']
+    cfg['metrics']['use_custom_test_images'] = True
+    starter._finalize_metrics_section(cfg['metrics'], cfg)
+    assert cfg['metrics']['data_kwargs']['kwargs_data']['metadata_filepath'] == cfg['create_dataset']['noisy_filtered_metadata_output_file']
 
 
 @pytest.mark.unit
@@ -168,7 +168,6 @@ def test_validate_checkpoint_config_specific_validation_errors():
             'checkpoint_custom_epoch': None,
         },
         'data': {},
-        'runtime': {},
     }
     with pytest.raises(ValueError):
         starter._validate_and_sync_checkpoint_config(cfg)
@@ -180,7 +179,6 @@ def test_validate_checkpoint_config_specific_validation_errors():
             'checkpoint_custom_epoch': None,
         },
         'data': {},
-        'runtime': {},
     }
     with pytest.raises(ValueError):
         starter._validate_and_sync_checkpoint_config(cfg2)

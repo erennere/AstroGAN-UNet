@@ -479,7 +479,7 @@ def main():
     cfg = load_config(**overrides)
     logging.info("Config loaded.")
 
-    vis_cfg = cfg['visualization']['prepare_images']
+    vis_cfg = cfg['prepare_images']
     data_cfg = dict(vis_cfg['data_kwargs'])
 
     _output_dir     = vis_cfg['output_dir']

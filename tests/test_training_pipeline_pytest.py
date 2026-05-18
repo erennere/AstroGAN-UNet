@@ -36,7 +36,7 @@ def test_resolve_registry_function_rejects_unknown_name():
 @pytest.mark.unit
 def test_candidate_functions_expand_rows_and_preserve_location(tiny_metadata_df, mock_cfg):
     row = tiny_metadata_df.iloc[0]
-    ratio_rows = candidates_based_on_ratio(row, mock_cfg['data'])
+    ratio_rows = candidates_based_on_ratio(row, mock_cfg['new_train']['data'])
 
     assert len(ratio_rows) > 1
     assert {entry['location'] for entry in ratio_rows} == {row['location']}
@@ -117,7 +117,7 @@ def test_tiny_checkpoint_fixture_contains_expected_metadata(tiny_checkpoint_path
 @pytest.mark.integration
 @pytest.mark.parametrize('loss_fn', [tf.keras.losses.MeanAbsoluteError(), scale_invariant_mae, log_cosh_loss, ssim_loss])
 def test_unet_single_train_step_changes_weights(mock_cfg, loss_fn):
-    model = network(mock_cfg['input_shape'], **mock_cfg['training']['network_kwargs'])
+    model = network(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['network_kwargs'])
     model.compile(optimizer=tf.keras.optimizers.Adam(1e-3), loss=loss_fn)
     x = tf.random.uniform((2, 64, 64, 1))
     y = tf.random.uniform((2, 64, 64, 1))
@@ -135,8 +135,8 @@ def test_gan_single_train_step_and_adversarial_weight_effect(mock_cfg):
     y = tf.random.uniform((2, 64, 64, 1), seed=22)
 
     def build_gan(adv_weight):
-        generator = network(mock_cfg['input_shape'], **mock_cfg['training']['network_kwargs'])
-        discriminator = get_discriminator(mock_cfg['input_shape'], **mock_cfg['training']['discriminator_kwargs'])
+        generator = network(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['network_kwargs'])
+        discriminator = get_discriminator(mock_cfg['input_shape'], **mock_cfg['new_train']['training']['discriminator_kwargs'])
         model = GAN(
             generator=generator,
             discriminator=discriminator,
@@ -190,7 +190,7 @@ def test_callback_writes_expected_files(tmp_path: Path, tiny_unet, mock_cfg):
         training_metrics_csv_path=str(tmp_path / 'results' / 'history.csv'),
         validation_loss_filename='validation_loss.txt',
         training_metrics_filename='training_metrics.txt',
-        config=mock_cfg,
+        config=mock_cfg['new_train'],
     )
     callback.set_model(tiny_unet)
     callback.on_train_begin()
@@ -199,7 +199,7 @@ def test_callback_writes_expected_files(tmp_path: Path, tiny_unet, mock_cfg):
 
     validation_loss_file = tmp_path / 'results' / 'validation_loss.txt'
     history_csv = tmp_path / 'results' / 'history.csv'
-    checkpoint_file = tmp_path / 'checkpoints' / build_checkpoint_filename('model', 1, mock_cfg['training']['checkpoint_filename_pattern'])
+    checkpoint_file = tmp_path / 'checkpoints' / build_checkpoint_filename('model', 1, mock_cfg['new_train']['training']['checkpoint_filename_pattern'])
 
     assert validation_loss_file.exists()
     assert 'Epoch 1' in validation_loss_file.read_text(encoding='utf-8')
@@ -213,23 +213,23 @@ def test_callback_writes_expected_files(tmp_path: Path, tiny_unet, mock_cfg):
 def test_data_augment_pluggable_creates_split_caches_and_info_file(mock_cfg):
     from src.training import new_train
 
-    train_kwargs = dict(mock_cfg['data'])
+    train_kwargs = dict(mock_cfg['new_train']['data'])
     train_kwargs['training'] = True
-    train_samples = list(islice(data_augment_pluggable([], train_kwargs, scaling=mock_cfg['training']['scaling']), 2))
+    train_samples = list(islice(data_augment_pluggable([], train_kwargs, scaling=mock_cfg['new_train']['training']['scaling']), 2))
 
-    eval_kwargs = dict(mock_cfg['data'])
+    eval_kwargs = dict(mock_cfg['new_train']['data'])
     eval_kwargs['training'] = False
-    eval_samples = list(islice(data_augment_pluggable([], eval_kwargs, scaling=mock_cfg['training']['scaling']), 1))
+    eval_samples = list(islice(data_augment_pluggable([], eval_kwargs, scaling=mock_cfg['new_train']['training']['scaling']), 1))
 
-    test_kwargs = dict(mock_cfg['data'])
+    test_kwargs = dict(mock_cfg['new_train']['data'])
     test_kwargs['training'] = False
     test_kwargs['test'] = True
-    test_samples = list(data_augment_pluggable([], test_kwargs, scaling=mock_cfg['training']['scaling']))
+    test_samples = list(data_augment_pluggable([], test_kwargs, scaling=mock_cfg['new_train']['training']['scaling']))
 
-    training_cache = pd.read_csv(mock_cfg['data']['training_cache_filepath'])
-    eval_cache = pd.read_csv(mock_cfg['data']['eval_cache_filepath'])
-    test_cache = pd.read_csv(mock_cfg['data']['test_cache_filepath'])
-    info_df = pd.read_csv(mock_cfg['data']['info_filepath'])
+    training_cache = pd.read_csv(mock_cfg['new_train']['data']['training_cache_filepath'])
+    eval_cache = pd.read_csv(mock_cfg['new_train']['data']['eval_cache_filepath'])
+    test_cache = pd.read_csv(mock_cfg['new_train']['data']['test_cache_filepath'])
+    info_df = pd.read_csv(mock_cfg['new_train']['data']['info_filepath'])
 
     assert train_samples
     assert eval_samples
@@ -241,10 +241,10 @@ def test_data_augment_pluggable_creates_split_caches_and_info_file(mock_cfg):
         assert np.isfinite(noisy).all()
         assert np.isfinite(clean).all()
         assert metadata
-    assert Path(mock_cfg['data']['training_cache_filepath']).exists()
-    assert Path(mock_cfg['data']['eval_cache_filepath']).exists()
-    assert Path(mock_cfg['data']['test_cache_filepath']).exists()
-    assert Path(mock_cfg['data']['info_filepath']).exists()
+    assert Path(mock_cfg['new_train']['data']['training_cache_filepath']).exists()
+    assert Path(mock_cfg['new_train']['data']['eval_cache_filepath']).exists()
+    assert Path(mock_cfg['new_train']['data']['test_cache_filepath']).exists()
+    assert Path(mock_cfg['new_train']['data']['info_filepath']).exists()
     assert not info_df.empty
     assert new_train.MEM_CACHED_TEST is not None
     assert new_train.MEM_CACHED_EVAL is not None

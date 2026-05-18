@@ -171,14 +171,13 @@ def test_module_main_guard_executes_with_stubbed_config(monkeypatch: pytest.Monk
     data.to_csv(noise, index=False)
 
     cfg = {
-        'evaluation': {
+        'merge_catalogs': {
             'uncropped_output_dir': str(tmp_path),
             'uncropped_rec_catalog_csv': 'rec.csv',
             'uncropped_noisy_catalog_csv': 'noise.csv',
             'uncropped_org_catalog_csv': 'org.csv',
             'photometrical_data_filename': 'photo.parquet',
             'merge_catalog_workers': 1,
-            'workers': 1,
             'merge_catalog_threshold': 3.5,
         }
     }

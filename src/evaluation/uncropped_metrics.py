@@ -315,7 +315,7 @@ if __name__ == '__main__':
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     overrides = parse_config_overrides()
     cfg = load_config(**overrides)
-    eval_cfg = cfg['evaluation']
+    eval_cfg = cfg['uncropped_metrics']
     data_cfg = dict(eval_cfg['data_kwargs']['kwargs_data'])
 
     metadata_filepath = eval_cfg['metadata_filepath']
