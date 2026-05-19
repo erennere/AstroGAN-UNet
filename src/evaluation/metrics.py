@@ -31,8 +31,8 @@ from photutils.utils import circular_footprint
 
 from src.data.create_dataset import crop_image_generator
 from src.training.new_train import data_augment_pluggable
-from src.training.math_helpers import _simulated_image_from_exposure, _simulated_image_from_poisson, adaptive_log_transform_and_normalize, inverse_adaptive_log_transform_and_denormalize, min_max_normalization, inverse_min_max_normalization, zscore_normalization, inverse_zscore_normalization
-from src.training.utils import open_fits, save_fits, ensure_directory_exists, ensure_parent_dir_exists, build_checkpoint_custom_objects, load_checkpoint_model, read_checkpoint_info
+from src.training.math_helpers import _simulated_image_from_exposure, _simulated_image_from_poisson, adaptive_log_transform_and_normalize, inverse_adaptive_log_transform_and_denormalize, min_max_normalization, inverse_min_max_normalization, zscore_normalization, inverse_zscore_normalization, set_log_domain_clip_max
+from src.training.utils import open_fits, save_fits, ensure_directory_exists, ensure_parent_dir_exists, build_checkpoint_custom_objects, load_checkpoint_model, read_checkpoint_info, set_checkpoint_info_filename
 from starter import _decode_models_dir, load_config, parse_config_overrides  #sym:parse_config_overrides
 logging.basicConfig(level=logging.WARNING)
 
@@ -989,6 +989,7 @@ def extract_sources(image, image_flag, kwargs):
     deblend_cont = kwargs['deblend_cont']  # Minimum contrast ratio for deblending
     clean = kwargs['clean']  # Perform cleaning
     clean_param = kwargs['clean_param']  # Cleaning parameter
+    flux_radius_subpix = kwargs.get('flux_radius_subpix', 5)
 
     # Subtract background using SEP
     image = image.astype(image.dtype.newbyteorder('='))  # Converts to the native byte order
@@ -1025,7 +1026,7 @@ def extract_sources(image, image_flag, kwargs):
     phot_flag[use_circle] = cflag
 
     # Compute flux radius
-    r, rflag = sep.flux_radius(data_sub, x, y, radius_factor * a, PHOT_FLUXFRAC, normflux=flux, subpix=5)
+    r, rflag = sep.flux_radius(data_sub, x, y, radius_factor * a, PHOT_FLUXFRAC, normflux=flux, subpix=flux_radius_subpix)
     phot_flag |= rflag
     
     # Create mask
@@ -2341,11 +2342,37 @@ if __name__ == '__main__':
 
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    index = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].lstrip('-').isdigit() else 0
-    concurrent_workers = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].lstrip('-').isdigit() else 1
-    overrides = parse_config_overrides(start_index=3)  # sys.argv[1]=index, sys.argv[2]=concurrent_workers, flags start at 3
+    bootstrap_overrides = parse_config_overrides(start_index=3)
+    bootstrap_cfg = load_config(**bootstrap_overrides)
+    bootstrap_eval_cfg = bootstrap_cfg['metrics']
+
+    cursor = 1
+    index = 0
+    if len(sys.argv) > cursor and sys.argv[cursor].lstrip('-').isdigit():
+        index = int(sys.argv[cursor])
+        cursor += 1
+
+    concurrent_workers = 1
+    if len(sys.argv) > cursor and sys.argv[cursor].lstrip('-').isdigit():
+        concurrent_workers = int(sys.argv[cursor])
+        cursor += 1
+
+    configured_start_index = bootstrap_eval_cfg.get('positional_override_start_index')
+    if configured_start_index is None:
+        overrides = parse_config_overrides(start_index=cursor)
+    else:
+        overrides = parse_config_overrides(start_index=int(configured_start_index))
     cfg = load_config(**overrides)
     eval_cfg = cfg['metrics']
+    set_checkpoint_info_filename(eval_cfg.get('checkpoint_info_filename', 'checkpoint_info.json'))
+    data_kwargs_cfg = eval_cfg.get('data_kwargs', {})
+    if isinstance(data_kwargs_cfg, dict):
+        kwargs_data_cfg = data_kwargs_cfg.get('kwargs_data', {})
+        if not isinstance(kwargs_data_cfg, dict):
+            kwargs_data_cfg = {}
+    else:
+        kwargs_data_cfg = {}
+    set_log_domain_clip_max(kwargs_data_cfg.get('log_domain_clip_max', 80.0))
 
     main(eval_cfg['models_dir'],
          eval_cfg['data_kwargs'], eval_cfg['model_kwargs'], eval_cfg['kwargs_source'],

@@ -15,6 +15,25 @@ from src.data.mast import download_images
 from src.training.utils import open_fits, save_fits, ensure_directory_exists, ensure_parent_dir_exists
 from starter import load_config, parse_config_overrides  #sym:parse_config_overrides
 
+HISTOGRAM_BINS_DEFAULT = 'auto'
+
+
+def set_histogram_bins_default(value):
+    """Configure the default histogram binning used by plot_histogram."""
+    global HISTOGRAM_BINS_DEFAULT
+    if value is None:
+        HISTOGRAM_BINS_DEFAULT = 'auto'
+        return
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError('histogram_bins must be positive when provided as an integer.')
+        HISTOGRAM_BINS_DEFAULT = value
+        return
+    if isinstance(value, str) and value.strip().lower() == 'auto':
+        HISTOGRAM_BINS_DEFAULT = 'auto'
+        return
+    raise ValueError('histogram_bins must be a positive integer or "auto".')
+
 ####### HELPER FUNCTIONS###########################
 def create_dir(save_dir):
     """Create a directory if it does not already exist.
@@ -36,7 +55,7 @@ def create_dir(save_dir):
         logging.warning(f'an error occurred while creating the directory: {save_dir}, {err}')
         return False
         
-def plot_histogram(df, exp_column, filepath):
+def plot_histogram(df, exp_column, filepath, bins=None):
     """Plot a histogram for one column of a DataFrame and save to disk.
 
     Parameters
@@ -56,8 +75,11 @@ def plot_histogram(df, exp_column, filepath):
     median_val = round(df[exp_column].median(), 2)
     std_val = round(df[exp_column].std(), 2)
 
+    if bins is None:
+        bins = HISTOGRAM_BINS_DEFAULT
+
     plt.figure(figsize=(10, 6))
-    plt.hist(df[exp_column], bins=30, color='skyblue', edgecolor='black', label=f'N: {len(df)}')
+    plt.hist(df[exp_column], bins=bins, color='skyblue', edgecolor='black', label=f'N: {len(df)}')
     plt.title(f'Histogram of {exp_column}')
     plt.xlabel(exp_column)
     plt.ylabel('Frequency')
@@ -907,6 +929,7 @@ def main():
     overrides = parse_config_overrides()  # parses sys.argv by default
     cfg = load_config(**overrides)
     dataset_cfg = cfg['create_dataset']
+    set_histogram_bins_default(dataset_cfg.get('histogram_bins', 'auto'))
 
     control_flow(
         dataset_dir=dataset_cfg['dataset_dir'],

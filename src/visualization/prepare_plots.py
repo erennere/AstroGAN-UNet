@@ -137,10 +137,9 @@ def create_table(metadata_filepath, results_filepath):
     return final_table
 
 def convert_to_jansky(flux_e_per_s, PHOTPLAM=15369.17570896557, 
-                      PHOTFLAM =1.92756031304868e-20):
+                      PHOTFLAM =1.92756031304868e-20, factor=33356.4):
     """Convert flux from e-/s to Jansky using HST calibration constants."""
 
-    factor = 3.33564e4
     return flux_e_per_s*PHOTFLAM*PHOTPLAM**2*factor
 
 def convert_to_angstrom(flux_e_per_s, PHOTFLAM =1.92756031304868e-20):
@@ -155,7 +154,7 @@ def calculate_abmag(flux_jansky):
         return np.nan
     return -2.5*np.log10(flux_jansky) + 8.9
 
-def add_columns(df):
+def add_columns(df, jansky_factor=None):
     """Add derived ratio, flux-unit, magnitude, and SNR-like columns."""
 
     df['exp_ratio'] = df.apply(
@@ -168,7 +167,10 @@ def add_columns(df):
 
     for col in ['flux_x_org', 'flux_y_org', 'flux_x_rec', 'flux_y_rec', 'flux_x_noise', 'flux_y_noise', 'cflux_org', 'cflux_rec', 'cflux_noise',
                 'flux_err_org', 'flux_err_rec', 'flux_err_noise']:
-        df['j_' + col] = df[col].apply(convert_to_jansky)
+        if jansky_factor is None:
+            df['j_' + col] = df[col].apply(convert_to_jansky)
+        else:
+            df['j_' + col] = df[col].apply(convert_to_jansky, factor=jansky_factor)
         if 'err' not in col:
             df['abmag_' + col] = df['j_' + col].apply(calculate_abmag)
         df['a_' + col] = df[col].apply(convert_to_angstrom)
@@ -1173,7 +1175,10 @@ def main():
     edited_filepath = os.path.join(os.path.dirname(path_to_data), f'edited_{os.path.basename(path_to_data)}')
     if not os.path.exists(edited_filepath):
         df = pd.read_parquet(path_to_data)
-        df = add_columns(df)
+        try:
+            df = add_columns(df, vis_cfg.get('jansky_factor', None))
+        except TypeError:
+            df = add_columns(df)
         df.to_parquet(edited_filepath, index=False)
     else:
         df = pd.read_parquet(edited_filepath)
@@ -1206,7 +1211,7 @@ def main():
         }
         plot_specs = build_hexbin_plot_specs(_rec_cmap, _noise_cmap)
 
-        snr_filename = 'snr.png'
+        snr_filename = vis_cfg.get('snr_filename', 'snr.png')
         for spec in plot_specs:
             try:
                 render_hexbin_plot(

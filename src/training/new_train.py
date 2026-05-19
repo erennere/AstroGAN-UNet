@@ -24,9 +24,11 @@ from src.training.utils import (
     log_cosh_loss,
     ssim_loss,
     ensure_parent_dir_exists,
+    set_checkpoint_info_filename,
 )
 from src.training.math_helpers import (
     apply_scaling_and_stats,
+    set_log_domain_clip_max,
 )
 from src.config_parsing import parse_required_int
 from starter import load_config, parse_config_overrides  #sym:parse_config_overrides
@@ -622,7 +624,9 @@ def train_network(input_shape, n_epochs, kwargs_data, kwargs_network, data_gener
          training_history_json_path='./training_history.json',
          validation_loss_filename='validation_loss.txt',
          training_metrics_filename='training_metrics.txt',
-         config=None):
+         config=None,
+         cpu_max_batch_size=2,
+         counter_initial_value=0):
     """
     Train GAN components using FITS-derived tf.data batches and callback logging.
 
@@ -680,9 +684,13 @@ def train_network(input_shape, n_epochs, kwargs_data, kwargs_network, data_gener
     if not callable(G_loss_fn):
         raise ValueError("The 'G_loss_fn' must be callable.")
 
-    if len(tf.config.list_physical_devices('GPU')) == 0 and batch_size > 2:
-        logging.warning('No GPU detected; reducing batch_size from %d to %d for CPU stability.', batch_size, 2)
-        batch_size = 2
+    if len(tf.config.list_physical_devices('GPU')) == 0 and batch_size > cpu_max_batch_size:
+        logging.warning(
+            'No GPU detected; reducing batch_size from %d to %d for CPU stability.',
+            batch_size,
+            cpu_max_batch_size,
+        )
+        batch_size = cpu_max_batch_size
     
     #Reading the imge filepaths from files residing in the respective folders
     training_path = kwargs_data['training_path']
@@ -790,14 +798,14 @@ def train_network(input_shape, n_epochs, kwargs_data, kwargs_network, data_gener
                                         batch_size=batch_size, scaling=scaling, augment=False)
     logging.info('Validation dataset created with batch_size=%d.', batch_size)
 
-    train_dataset_size = 0
-    train_batches = 0
+    train_dataset_size = int(counter_initial_value)
+    train_batches = int(counter_initial_value)
     for x_batch, _, _ in train_dataset:
         train_batches += 1
         train_dataset_size += int(x_batch.shape[0])
 
-    validation_dataset_size = 0
-    valid_batches = 0
+    validation_dataset_size = int(counter_initial_value)
+    valid_batches = int(counter_initial_value)
     for x_batch, _, _ in validation_dataset:
         valid_batches += 1
         validation_dataset_size += int(x_batch.shape[0])
@@ -864,6 +872,9 @@ def main():
     discriminator_config = dict(training_config['discriminator_kwargs'])
     gan_config = dict(training_config['gan_kwargs'])
 
+    set_checkpoint_info_filename(training_config.get('checkpoint_info_filename', 'checkpoint_info.json'))
+    set_log_domain_clip_max(data_config.get('log_domain_clip_max', 80.0))
+
     logging.info('Resolved paths: training=%s eval=%s models=%s', data_config['training_path'], data_config['eval_path'], data_config['results_path'])
 
     logging.warning(f"Num GPUs Available: {len(tf.config.experimental.list_physical_devices('GPU'))}")
@@ -894,6 +905,8 @@ def main():
         validation_loss_filename=training_config['validation_loss_filename'],
         training_metrics_filename=training_config['training_metrics_filename'],
         config=train_cfg,
+        cpu_max_batch_size=training_config.get('cpu_max_batch_size', 2),
+        counter_initial_value=training_config.get('counter_initial_value', 0),
     )
     
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from collections.abc import Sized
 from src.training.utils import ensure_parent_dir_exists
 from starter import load_config, parse_config_overrides  #sym:parse_config_overrides
 
-def filter_out_mast(mission, filters):
+def filter_out_mast(mission, filters, query_limit=5000):
     """Retrieve and filter metadata from MAST for a given mission.
 
     Queries the MAST API with pagination and returns the result as a
@@ -40,7 +40,7 @@ def filter_out_mast(mission, filters):
     kwargs = {}
     length = 1
     offset = 0
-    limit = 5000
+    limit = int(query_limit)
     results = []
 
     try:
@@ -150,7 +150,7 @@ def plot_histogram(data, bins=20, label=None, xlabel='Exposure Time (s)', ylabel
     plt.savefig(output_filename, dpi=300)
     plt.show()
 
-async def download_image(id_, url, save_dir, session, semaphore, filename):
+async def download_image(id_, url, save_dir, session, semaphore, filename, timeout_seconds=15):
     """Download a single FITS image from *url* and save it to *save_dir*.
 
     Parameters
@@ -183,7 +183,7 @@ async def download_image(id_, url, save_dir, session, semaphore, filename):
     async with semaphore:
         try:
             if not session:
-                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_seconds))
             async with session.get(url) as response:
                 if response.status == 200:
 
@@ -197,7 +197,7 @@ async def download_image(id_, url, save_dir, session, semaphore, filename):
             logging.warning(f'an error occured while downloading: {err}')
         return False
 
-async def download_images(ids, urls, save_dir, max_requests=5, reset_after=10):
+async def download_images(ids, urls, save_dir, max_requests=5, reset_after=10, timeout_seconds=15):
     """Download multiple FITS images from *urls* asynchronously.
 
     Parameters
@@ -228,14 +228,18 @@ async def download_images(ids, urls, save_dir, max_requests=5, reset_after=10):
             if i % reset_after == 0:
                 if session:
                     await session.close()
-                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
+                session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_seconds))
             if pd.isna(url):
                 continue
             attempted_count += 1
             if url is None or pd.isna(url) or str(url).strip() == '':
                 continue
             filename = os.path.basename(url)
-            if await download_image(id_, url, save_dir, session, semaphore, filename):
+            try:
+                downloaded = await download_image(id_, url, save_dir, session, semaphore, filename, timeout_seconds)
+            except TypeError:
+                downloaded = await download_image(id_, url, save_dir, session, semaphore, filename)
+            if downloaded:
                 success_count += 1
     except Exception as err:
         logging.warning(f'an error occurred while downloading urls: {err}')
@@ -378,6 +382,7 @@ def merge_products_with_metadata(
     max_workers=8,
     prefer_token='drz',
     chunk_size=500,
+    min_chunk_size=1,
     max_retries=2,
     retry_delay=2.0,
 ):
@@ -429,7 +434,7 @@ def merge_products_with_metadata(
 
     logging.info('Resolving product URLs for %d dataset ids via bulk Observations.get_product_list.', len(unresolved_ids))
     resolved_map = {}
-    chunk_size = max(1, int(chunk_size))
+    chunk_size = max(int(min_chunk_size), int(chunk_size))
     chunks = list(_chunked(unresolved_ids, chunk_size))
     total_chunks = len(chunks)
 
@@ -497,6 +502,9 @@ def main():
         raise TypeError("config['mast'] must be a mapping.")
 
     cfg = dict(root_cfg['mast'])
+    cfg.setdefault('query_limit', 5000)
+    cfg.setdefault('http_timeout_seconds', 15)
+    cfg.setdefault('min_chunk_size', 1)
     required_keys = [
         'mission',
         'filters',
@@ -525,7 +533,10 @@ def main():
 
     table = None
     if cfg['fetch_metadata']:
-        table = filter_out_mast(cfg['mission'], cfg['filters'])
+        try:
+            table = filter_out_mast(cfg['mission'], cfg['filters'], cfg['query_limit'])
+        except TypeError:
+            table = filter_out_mast(cfg['mission'], cfg['filters'])
         if table is None or table.empty:
             logging.warning('No metadata returned from MAST. Nothing to write.')
         else:
@@ -551,6 +562,7 @@ def main():
             max_workers=cfg['max_workers'],
             prefer_token=cfg['prefer_token'],
             chunk_size=cfg['chunk_size'],
+            min_chunk_size=cfg['min_chunk_size'],
             max_retries=cfg['resolve_max_retries'],
             retry_delay=cfg['resolve_retry_delay'],
         )
@@ -562,15 +574,27 @@ def main():
         if cfg['download'] and cfg['url_column'] in table.columns:
             valid = table[[cfg['id_column'], cfg['url_column']]].dropna(subset=[cfg['url_column']])
             if not valid.empty:
-                asyncio.run(
-                    download_images(
-                        valid[cfg['id_column']].tolist(),
-                        valid[cfg['url_column']].tolist(),
-                        cfg['save_dir'],
-                        max_requests=cfg['max_requests'],
-                        reset_after=cfg['reset_after'],
+                try:
+                    asyncio.run(
+                        download_images(
+                            valid[cfg['id_column']].tolist(),
+                            valid[cfg['url_column']].tolist(),
+                            cfg['save_dir'],
+                            max_requests=cfg['max_requests'],
+                            reset_after=cfg['reset_after'],
+                            timeout_seconds=cfg['http_timeout_seconds'],
+                        )
                     )
-                )
+                except TypeError:
+                    asyncio.run(
+                        download_images(
+                            valid[cfg['id_column']].tolist(),
+                            valid[cfg['url_column']].tolist(),
+                            cfg['save_dir'],
+                            max_requests=cfg['max_requests'],
+                            reset_after=cfg['reset_after'],
+                        )
+                    )
 
 
 if __name__ == '__main__':

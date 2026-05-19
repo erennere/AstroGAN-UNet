@@ -9,7 +9,8 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from src.evaluation.metrics import _reconstruct_patch, compare_images, find_best_performing_models, get_model_by_modulo, wrap_extract_sources, decide_scale, get_top_best_models
 from src.data.create_dataset import crop_image_generator
-from src.training.utils import open_fits, candidates_based_on_range, ensure_directory_exists, ensure_parent_dir_exists, build_checkpoint_custom_objects, load_checkpoint_model
+from src.training.math_helpers import set_log_domain_clip_max
+from src.training.utils import open_fits, candidates_based_on_range, ensure_directory_exists, ensure_parent_dir_exists, build_checkpoint_custom_objects, load_checkpoint_model, set_checkpoint_info_filename
 
 from starter import load_config, parse_config_overrides  #sym:parse_config_overrides
 
@@ -317,6 +318,8 @@ if __name__ == '__main__':
     cfg = load_config(**overrides)
     eval_cfg = cfg['uncropped_metrics']
     data_cfg = dict(eval_cfg['data_kwargs']['kwargs_data'])
+    set_checkpoint_info_filename(eval_cfg.get('checkpoint_info_filename', 'checkpoint_info.json'))
+    set_log_domain_clip_max(data_cfg.get('log_domain_clip_max', 80.0))
 
     metadata_filepath = eval_cfg['metadata_filepath']
     uncropped_output_dir = eval_cfg['uncropped_output_dir']
@@ -339,7 +342,7 @@ if __name__ == '__main__':
         model_prototype=eval_cfg['model_prototype'],
         n=1,
         index=0,
-        concurrent_workers=1
+        concurrent_workers=eval_cfg.get('uncropped_model_select_workers', 1)
         )
     
     _ = process_data(

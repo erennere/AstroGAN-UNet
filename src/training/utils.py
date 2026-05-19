@@ -228,6 +228,20 @@ def save_fits(image, name, path, type_of_image='SCI'):
 
 CHECKPOINT_INFO_FILENAME = 'checkpoint_info.json'
 
+
+def set_checkpoint_info_filename(filename):
+    """Configure the internal checkpoint metadata filename.
+
+    Parameters
+    ----------
+    filename : str
+        Non-empty archive member filename used inside `.keras` files.
+    """
+    if not isinstance(filename, str) or not filename.strip():
+        raise ValueError('checkpoint_info_filename must be a non-empty string.')
+    global CHECKPOINT_INFO_FILENAME
+    CHECKPOINT_INFO_FILENAME = filename
+
 def build_checkpoint_filename(checkpoint_prefix, epoch, filename_pattern):
     """Build a checkpoint filename from one strict pattern.
 

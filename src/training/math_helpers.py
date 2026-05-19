@@ -7,6 +7,20 @@ import pandas as pd
 from src.config_parsing import parse_required_int
 
 
+LOG_DOMAIN_CLIP_MAX = 80.0
+
+
+def set_log_domain_clip_max(value):
+    """Configure the clipping ceiling used in inverse adaptive-log reconstruction."""
+    if value is None:
+        raise ValueError('log_domain_clip_max cannot be None.')
+    clip_value = float(value)
+    if not np.isfinite(clip_value):
+        raise ValueError('log_domain_clip_max must be finite.')
+    global LOG_DOMAIN_CLIP_MAX
+    LOG_DOMAIN_CLIP_MAX = clip_value
+
+
 def _row_get(row, key):
     """Read a field from either mapping-like rows or attribute-like rows."""
     if isinstance(row, dict):
@@ -700,7 +714,7 @@ def inverse_adaptive_log_transform_and_denormalize(
     log_domain_data = (
         predicted_data * (original_max_value - original_min_value) + original_min_value
     )
-    log_domain_data = np.clip(log_domain_data, a_min=None, a_max=80.0)
+    log_domain_data = np.clip(log_domain_data, a_min=None, a_max=LOG_DOMAIN_CLIP_MAX)
     linear_domain_data = np.exp(log_domain_data) - shift_value
     return linear_domain_data.astype(np.float32)
 

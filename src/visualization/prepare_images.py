@@ -11,9 +11,10 @@ from matplotlib.lines import Line2D
 from scipy.spatial import cKDTree
 from src.evaluation.metrics import scale_image, wrap_extract_sources, get_test_images
 from src.data.create_dataset import crop_image_generator
-from src.training.utils import open_fits, ensure_parent_dir_exists, candidates_based_on_ratio, build_checkpoint_custom_objects, load_checkpoint_model, read_checkpoint_info
+from src.training.utils import open_fits, ensure_parent_dir_exists, candidates_based_on_ratio, build_checkpoint_custom_objects, load_checkpoint_model, read_checkpoint_info, set_checkpoint_info_filename
 from src.training.math_helpers import (
     create_simulated_image_gaussian,
+    set_log_domain_clip_max,
 )
 from starter import parse_config_overrides, load_config
 from src.evaluation.metrics import find_best_performing_models, get_model_by_modulo
@@ -99,7 +100,7 @@ def create_image(row, model, kwargs_data, ps=256):
                 org = cropped_image
         yield org, noisy, recs, gammas
 
-def create_composite_plot(org, noisy, recs, gammas, label, output_filepath):
+def create_composite_plot(org, noisy, recs, gammas, label, output_filepath, output_dpi=None):
     """Save a composite PNG showing the original crop alongside noisy/reconstructed pairs.
 
     Parameters
@@ -140,7 +141,7 @@ def create_composite_plot(org, noisy, recs, gammas, label, output_filepath):
 
     ax0.set_title(f"{label}", fontsize=16)
     fig.tight_layout()
-    fig.savefig(output_filepath, dpi=500)
+    fig.savefig(output_filepath, dpi=output_dpi)
     plt.close(fig)
 
 def plot_source_comparison_sep(original_image, noisy_image, reconstructed_image,
@@ -346,7 +347,7 @@ def compare_images(image_org, noisy_image, image_reconstructed, kwargs):
         noisy_theta,
     )
 
-def create_composite_plot_detections(org, noisy, recs, gammas, ellipses, label, output_filepath):
+def create_composite_plot_detections(org, noisy, recs, gammas, ellipses, label, output_filepath, output_dpi=None):
     """Save a composite PNG overlaying detected-source ellipses on each image.
 
     Parameters
@@ -410,10 +411,10 @@ def create_composite_plot_detections(org, noisy, recs, gammas, ellipses, label, 
     fig.legend(handles=legend_elements, loc='lower center', bbox_to_anchor=(0.5, 0.01),
                ncol=3, frameon=False)
     fig.tight_layout(rect=(0, 0.05, 1, 1))
-    fig.savefig(output_filepath, dpi=500)
+    fig.savefig(output_filepath, dpi=output_dpi)
     plt.close(fig)
 
-def coordinate_detect_source(org, noisy, recs, gammas, label, kwargs, output_filepath):
+def coordinate_detect_source(org, noisy, recs, gammas, label, kwargs, output_filepath, output_dpi=None):
     """Cross-match sources for every (noisy, rec) pair and save a detection overlay PNG.
 
     Iterates over (noisy, rec, gamma) triples, runs :func:`compare_images` on
@@ -451,7 +452,16 @@ def coordinate_detect_source(org, noisy, recs, gammas, label, kwargs, output_fil
             filtered_recs.append(image_reconstructed)
             new_gammas.append(gamma)
     if len(all_ellipses):
-        create_composite_plot_detections(org, filtered_noisy, filtered_recs, new_gammas, all_ellipses, label, output_filepath)
+        create_composite_plot_detections(
+            org,
+            filtered_noisy,
+            filtered_recs,
+            new_gammas,
+            all_ellipses,
+            label,
+            output_filepath,
+            output_dpi=output_dpi,
+        )
     
 def main():
     """Load config, sample evaluation images, and produce composite visualization PNGs.
@@ -481,6 +491,8 @@ def main():
 
     vis_cfg = cfg['prepare_images']
     data_cfg = dict(vis_cfg['data_kwargs'])
+    set_checkpoint_info_filename(vis_cfg.get('checkpoint_info_filename', 'checkpoint_info.json'))
+    set_log_domain_clip_max(data_cfg.get('log_domain_clip_max', 80.0))
 
     _output_dir     = vis_cfg['output_dir']
 
@@ -550,10 +562,12 @@ def main():
                     create_composite_plot(
                         org, noisy, recs, gammas, combined_label,
                         os.path.join(_output_dir, f'{label}_{index_2}.png'),
+                        vis_cfg.get('output_dpi', None),
                     )
                     coordinate_detect_source(
                         org, noisy, recs, gammas, combined_label, _kwargs_source,
                         os.path.join(_output_dir, f'{label}_{index_2}_detections.png'),
+                        vis_cfg.get('output_dpi', None),
                     )
                     logging.info(f"  Saved crop {index_2}: {len(gammas)} gamma(s).")
                 except Exception as err:

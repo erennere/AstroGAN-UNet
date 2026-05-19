@@ -1,8 +1,13 @@
 # AstroGAN-UNet
+AstroGAN-UNet is my bachelor thesis project in physics, developed at the Max Planck Institute for Astronomy in Heidelberg under the supervision of Dr. Ivelina Momcheva.
 
-AstroGAN-UNet is a TensorFlow/Keras astronomy pipeline for building denoising models on FITS images, evaluating reconstruction quality with source-extraction metrics, merging photometric catalogs, and generating final qualitative and quantitative visualizations.
+The project addresses a practical astronomy problem: many surveys in MAST are shallow and noisy, while deep observations are limited and expensive. This repository builds a reproducible pipeline to train image-reconstruction models that map noisy/shallow inputs toward cleaner reconstructions, then evaluates whether recovered structure and photometry remain scientifically useful.
+
+Technically, AstroGAN-UNet is a TensorFlow/Keras pipeline for FITS-based denoising with U-Net and GAN variants, followed by source-extraction metrics, uncropped photometric catalog generation, and final visualization/report outputs.
 
 The active pipeline is implemented under `src/`. The `legacy/` directory contains older standalone scripts that are not part of the current `src/` execution path and should be treated as historical utilities.
+
+
 
 ## Table of Contents
 
@@ -20,6 +25,7 @@ The active pipeline is implemented under `src/`. The `legacy/` directory contain
 12. [Usage Examples](#usage-examples)
 13. [Output Files](#output-files)
 14. [Developer Notes](#developer-notes)
+15. [Stage READMEs](#stage-readmes)
 
 ## Overview
 
@@ -73,6 +79,24 @@ The repository ships an `environment.yml` file that defines a conda environment 
 | `src/bash/setup_hpc_environment.sh` | Installs Miniconda and creates the `.venv` conda environment from `environment.yml`. |
 | `src/bash/setup_hpc_environment_slurm.sh` | Submits the environment setup to SLURM and forwards script arguments to `setup_hpc_environment.sh`. |
 | `src/bash/check_gpu_hpc.sh` | Verifies GPU visibility through `nvidia-smi`, TensorFlow, and PyTorch. |
+
+## Stage READMEs
+
+For module-level documentation in the same style as this root guide, use the stage READMEs below.
+
+Suggested reading order:
+
+1. `src/README.md` (global technical index and canonical execution order)
+2. stage-specific docs for the part you are working on
+
+Stage docs:
+
+- `src/README.md`
+- `src/data/README.md`
+- `src/training/README.md`
+- `src/evaluation/README.md`
+- `src/visualization/README.md`
+- `src/bash/README.md`
 
 ## Workflow Summary
 
