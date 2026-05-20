@@ -73,6 +73,14 @@ _RUNTIME_IMPORT_SPECS = {
     'detect_sources_in_image': ('src.evaluation.metrics', 'detect_sources_in_image'),
 }
 
+# Function order (top -> bottom):
+# 1) Override specification and parsing primitives
+# 2) Alias encoding/decoding utilities
+# 3) Template expansion and runtime symbol resolution
+# 4) Override application and template-context construction
+# 5) Runtime-source extraction and section-level value resolution
+# 6) Section finalization and public loading API
+
 
 class ConfigResolutionError(KeyError):
     """Raised when config references or derived sections cannot be resolved."""
@@ -86,6 +94,11 @@ class _OverrideSpec:
     coerce: Callable[[Any], Any]
     default_getter: Callable[[dict[str, Any], dict[str, Any]], Any]
     apply: Callable[[dict[str, Any], Any], None]
+
+
+# ---------------------------------------------------------------------------
+# 1) Override specification and parsing primitives
+# ---------------------------------------------------------------------------
 
 
 def _config_path_getter(*path_parts):
@@ -303,6 +316,11 @@ def _effective_override_value(config_data, explicit_overrides, key):
     if value is not None:
         return value
     return _OVERRIDE_SPECS_BY_KEY[key].default_getter(config_data, explicit_overrides)
+
+
+# ---------------------------------------------------------------------------
+# 2) Compact alias encoding and decoding helpers
+# ---------------------------------------------------------------------------
 
 def _pack_u16(value):
     if not isinstance(value, int) or value < 0 or value > 65535:
@@ -695,6 +713,11 @@ def _decode_data_signature(data_alias_enriched_hex):
         'data_alias_enriched_hex': data_alias_enriched_hex,
     }
 
+
+# ---------------------------------------------------------------------------
+# 3) Template expansion, runtime registry, and path normalization helpers
+# ---------------------------------------------------------------------------
+
 def _encode_model_alias(is_gan, use_attention, loss_function, data_alias_enriched_hex,
                          scaling_tag, dropout_tag, activation_tag, output_activation_tag,
                          discriminator_activation_tag, discriminator_output_activation_tag):
@@ -1051,6 +1074,11 @@ def _auto_resolve_training_entries(config_data):
 
     return config_data
 
+
+# ---------------------------------------------------------------------------
+# 4) Override application and template-context construction
+# ---------------------------------------------------------------------------
+
 def parse_config_overrides(args=None, argv=None, start_index=1):
     """Parse optional naming/config overrides for :func:`load_config`.
 
@@ -1197,6 +1225,11 @@ _RESOLUTION_ORDER = (
     'prepare_images',
     'prepare_plots',
 )
+
+
+# ---------------------------------------------------------------------------
+# 5) Runtime-source extraction and section-level value resolution
+# ---------------------------------------------------------------------------
 
 
 def _require_mapping(value, path):
@@ -1456,6 +1489,11 @@ def _finalize_uncropped_metrics_section(section_cfg, _resolved_root):
     section_cfg['data_kwargs'] = copy.deepcopy(section_cfg['data_kwargs'])
 
 
+# ---------------------------------------------------------------------------
+# 6) Section finalizers and public config loading API
+# ---------------------------------------------------------------------------
+
+
 _SECTION_FINALIZERS = {
     'new_train': _finalize_new_train_section,
     'metrics': _finalize_metrics_section,
@@ -1536,7 +1574,25 @@ def load_config(
     last_name_filter_value=None,
 ) -> dict[str, Any]:
     """Load config, apply overrides, normalize templates, and resolve script sections."""
-    override_inputs = locals().copy()
+    # Keep explicit mapping so override parameters are visibly consumed.
+    override_inputs = {
+        'nsigma': nsigma,
+        'footprint_radius': footprint_radius,
+        'npixels': npixels,
+        'model_type': model_type,
+        'attention': attention,
+        'scaling': scaling,
+        'loss_name': loss_name,
+        'dropout_rate': dropout_rate,
+        'output_activation': output_activation,
+        'kernel_initializer': kernel_initializer,
+        'activation_name': activation_name,
+        'discriminator_activation': discriminator_activation,
+        'discriminator_output_activation': discriminator_output_activation,
+        'filter_surveys': filter_surveys,
+        'filter_by_last_name': filter_by_last_name,
+        'last_name_filter_value': last_name_filter_value,
+    }
     path = Path(config_path) if config_path is not None else CONFIG_PATH
 
     config_text = path.read_text(encoding='utf-8')
