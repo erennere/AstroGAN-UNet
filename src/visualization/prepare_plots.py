@@ -1,6 +1,7 @@
 """Generate photometric summary tables and hexbin diagnostics from catalogs."""
 
 import os, logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -8,6 +9,12 @@ import matplotlib.lines as mlines
 from matplotlib.colors import Normalize
 from scipy.stats import binned_statistic
 from src.training.utils import ensure_parent_dir_exists
+from src.evaluation.metrics import (
+    condition,
+    find_best_performing_models,
+    get_model_by_modulo,
+    parse_runtime_selector_cli_args,
+)
 from starter import load_config, parse_config_overrides
 
 def safe_divide(numerator, denominator):
@@ -1120,6 +1127,117 @@ def create_flux_flux_error_diagram(df, flux_org_col, flux_noise_col, flux_rec_co
     ###plt.show()
     plt.close()
 
+
+def _apply_runtime_placeholders(value, data_alias_enriched_hex, model_alias_hex, epoch):
+    """Resolve shared placeholder styles used in evaluation/visualization paths."""
+    return (
+        str(value)
+        .replace('#', str(data_alias_enriched_hex))
+        .replace('&', str(model_alias_hex))
+        .replace('*', str(epoch))
+    )
+
+
+def _run_prepare_plots_for_model(vis_cfg, data_alias_enriched_hex, model_alias_hex, epoch):
+    """Render plots for one selected model alias/epoch pair."""
+
+    output_dir = _apply_runtime_placeholders(
+        vis_cfg['output_dir'], data_alias_enriched_hex, model_alias_hex, epoch
+    )
+    uncropped_output_dir = _apply_runtime_placeholders(
+        vis_cfg['uncropped_output_dir'], data_alias_enriched_hex, model_alias_hex, epoch
+    )
+    photometrical_data_filename = _apply_runtime_placeholders(
+        vis_cfg['photometrical_data_filename'], data_alias_enriched_hex, model_alias_hex, epoch
+    )
+    uncropped_results_csv = _apply_runtime_placeholders(
+        vis_cfg['uncropped_results_csv'], data_alias_enriched_hex, model_alias_hex, epoch
+    )
+
+    parquet_filepath = os.path.join(uncropped_output_dir, photometrical_data_filename)
+    metrics_filepath = os.path.join(uncropped_output_dir, uncropped_results_csv)
+
+    if len(vis_cfg['norm_quantiles']) != 2:
+        raise ValueError('visualization.prepare_plots.norm_quantiles must contain exactly two values.')
+    if vis_cfg['norm_quantiles'][0] >= vis_cfg['norm_quantiles'][1]:
+        raise ValueError('visualization.prepare_plots.norm_quantiles must be strictly increasing.')
+    if vis_cfg['norm_quantiles'][0] < 0 or vis_cfg['norm_quantiles'][1] > 100:
+        raise ValueError('visualization.prepare_plots.norm_quantiles must stay within [0, 100].')
+
+    if not os.path.exists(parquet_filepath):
+        raise FileNotFoundError(f"Parquet file not found: {parquet_filepath}")
+
+    edited_filepath = os.path.join(
+        os.path.dirname(parquet_filepath), f"edited_{os.path.basename(parquet_filepath)}"
+    )
+    if not os.path.exists(edited_filepath):
+        df = pd.read_parquet(parquet_filepath)
+        df = add_columns(df, vis_cfg['jansky_factor'])
+        df.to_parquet(edited_filepath, index=False)
+    else:
+        df = pd.read_parquet(edited_filepath)
+
+    metrics = create_table(vis_cfg['metadata_filepath'], metrics_filepath)
+
+    bright_df = df[(df['abmag_cflux_rec'] <= 25.0) | (df['abmag_cflux_org'] <= 25.0)].reset_index(drop=True)
+    bright_metrics = new_metrics(bright_df, exp_time_col='exp_ratio')
+    bright_metrics = bright_metrics.rename(
+        columns={col: 'bright_' + col for col in bright_metrics.columns if col != 'exp_ratio'}
+    )
+
+    all_metrics = pd.merge(bright_metrics, metrics, on=['exp_ratio']).sort_values(by=['exp_ratio'])
+
+    bright_df = df[df['abmag_cflux_org'] <= 25.0].dropna(subset=['abmag_cflux_org']).reset_index(drop=True)
+    for my_df, my_tag in zip([bright_df, df], ('25', 'all')):
+        my_output_dir = os.path.join(output_dir, my_tag)
+        columns = {
+            'org_flux': 'a_cflux_org',
+            'rec_flux': 'a_cflux_rec',
+            'noise_flux': 'a_cflux_noise',
+            'org_kron': 'kron_radius_org',
+            'rec_kron': 'kron_radius_rec',
+            'noise_kron': 'kron_radius_noise',
+            'org_mag': 'abmag_cflux_org',
+            'org_flux_err': 'a_flux_err_org',
+            'noise_flux_err': 'a_flux_err_noise',
+            'rec_flux_err': 'a_flux_err_rec',
+        }
+        plot_specs = build_hexbin_plot_specs(vis_cfg['rec_cmap'], vis_cfg['noise_cmap'])
+
+        snr_filename = vis_cfg['snr_filename']
+        for spec in plot_specs:
+            try:
+                render_hexbin_plot(
+                    my_df,
+                    os.path.join(my_output_dir, my_tag + '_' + spec['output_filename']),
+                    spec,
+                    columns,
+                    vis_cfg['norm_quantiles'],
+                )
+            except Exception as e:
+                logging.warning(f"Error in {spec['output_filename']}: {e}")
+
+        try:
+            create_flux_flux_error_diagram(
+                my_df,
+                columns['org_flux'],
+                columns['noise_flux'],
+                columns['rec_flux'],
+                columns['org_flux_err'],
+                columns['noise_flux_err'],
+                columns['rec_flux_err'],
+                os.path.join(my_output_dir, my_tag + '_' + snr_filename),
+            )
+        except Exception as e:
+            logging.warning(f'Error in create_flux_flux_error_diagram: {e}')
+
+        logging.info("Saved plots for subset '%s' -> %s", my_tag, my_output_dir)
+
+    out_csv = os.path.join(output_dir, 'all_metrics.csv')
+    ensure_parent_dir_exists(out_csv)
+    all_metrics.to_csv(out_csv, index=False)
+    logging.info('All metrics written to %s (%d rows).', out_csv, len(all_metrics))
+
 def main():
     """Load config and produce photometric plots/metrics for one parquet input.
 
@@ -1143,107 +1261,62 @@ def main():
     """
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-    overrides = parse_config_overrides()
+    selector_cli = parse_runtime_selector_cli_args()
+    overrides = parse_config_overrides(start_index=selector_cli['cursor'])
     cfg = load_config(**overrides)
     logging.info("Config loaded.")
 
     vis_cfg = cfg['prepare_plots']
 
-    _output_dir        = vis_cfg['output_dir']
+    condition_kwargs = {
+        'data_alias_enriched_hex': (
+            selector_cli['data_alias_enriched_hex']
+            if selector_cli['data_alias_enriched_hex'] is not None
+            else vis_cfg['data_alias_enriched_hex']
+        ),
+        'model_alias_hex': selector_cli['model_alias_hex'],
+        'epoch': selector_cli['epoch'],
+        'config_model_alias_hex': vis_cfg['model_alias_hex'],
+    }
 
-    _parquet_filepath  = os.path.join(
-        vis_cfg['uncropped_output_dir'],
-        vis_cfg['photometrical_data_filename']
+    models_dict = find_best_performing_models(
+        vis_cfg['models_dir'],
+        condition=condition,
+        filter_model=get_model_by_modulo,
+        model_prototype=vis_cfg['model_prototype'],
+        modulo=vis_cfg['modulo'],
+        index=selector_cli['index'],
+        concurrent_workers=selector_cli['concurrent_workers'],
+        condition_kwargs=condition_kwargs,
     )
 
-    _metrics_filename  = vis_cfg['uncropped_results_csv']
-    _metadata_filepath = vis_cfg['metadata_filepath']
-    _rec_cmap          = vis_cfg['rec_cmap']
-    _noise_cmap        = vis_cfg['noise_cmap']
-    _norm_quantiles    = vis_cfg['norm_quantiles']
-    
-    if len(_norm_quantiles) != 2:
-        raise ValueError('visualization.prepare_plots.norm_quantiles must contain exactly two values.')
-    if _norm_quantiles[0] >= _norm_quantiles[1]:
-        raise ValueError('visualization.prepare_plots.norm_quantiles must be strictly increasing.')
-    if _norm_quantiles[0] < 0 or _norm_quantiles[1] > 100:
-        raise ValueError('visualization.prepare_plots.norm_quantiles must stay within [0, 100].')
-    path_to_data = _parquet_filepath
-    if not os.path.exists(path_to_data):
-        raise FileNotFoundError(f"Parquet file not found: {path_to_data}")
+    jobs = []
+    for model_df in models_dict.values():
+        for _, row in model_df.iterrows():
+            jobs.append((row['model_alias_hex'], int(row['epoch'])))
 
-    edited_filepath = os.path.join(os.path.dirname(path_to_data), f'edited_{os.path.basename(path_to_data)}')
-    if not os.path.exists(edited_filepath):
-        df = pd.read_parquet(path_to_data)
-        try:
-            df = add_columns(df, vis_cfg.get('jansky_factor', None))
-        except TypeError:
-            df = add_columns(df)
-        df.to_parquet(edited_filepath, index=False)
-    else:
-        df = pd.read_parquet(edited_filepath)
+    if not jobs:
+        logging.warning('prepare_plots: no matching model checkpoints were selected.')
+        return
 
-    _metrics_filepath = os.path.join(os.path.dirname(path_to_data), _metrics_filename)
-    metrics = create_table(_metadata_filepath, _metrics_filepath)
-
-    bright_df = df[(df['abmag_cflux_rec'] <= 25.0) | (df['abmag_cflux_org'] <= 25.0)].reset_index(drop=True)
-    bright_metrics = new_metrics(bright_df, exp_time_col='exp_ratio')
-    bright_metrics = bright_metrics.rename(
-        columns={col: 'bright_' + col for col in bright_metrics.columns if col != 'exp_ratio'}
-    )
-
-    all_metrics = pd.merge(bright_metrics, metrics, on=['exp_ratio']).sort_values(by=['exp_ratio'])
-
-    bright_df = df[df['abmag_cflux_org'] <= 25.0].dropna(subset=['abmag_cflux_org']).reset_index(drop=True)
-    for my_df, my_tag in zip([bright_df, df], ('25', 'all')):
-        my_output_dir = os.path.join(_output_dir, my_tag)
-        columns = {
-            'org_flux': 'a_cflux_org',
-            'rec_flux': 'a_cflux_rec',
-            'noise_flux': 'a_cflux_noise',
-            'org_kron': 'kron_radius_org',
-            'rec_kron': 'kron_radius_rec',
-            'noise_kron': 'kron_radius_noise',
-            'org_mag': 'abmag_cflux_org',
-            'org_flux_err': 'a_flux_err_org',
-            'noise_flux_err': 'a_flux_err_noise',
-            'rec_flux_err': 'a_flux_err_rec',
-        }
-        plot_specs = build_hexbin_plot_specs(_rec_cmap, _noise_cmap)
-
-        snr_filename = vis_cfg.get('snr_filename', 'snr.png')
-        for spec in plot_specs:
-            try:
-                render_hexbin_plot(
-                    my_df,
-                    os.path.join(my_output_dir, my_tag + "_" + spec['output_filename']),
-                    spec,
-                    columns,
-                    _norm_quantiles,
+    with ProcessPoolExecutor(max_workers=vis_cfg['max_workers']) as executor:
+        futures = []
+        for model_alias_hex, epoch in jobs:
+            futures.append(
+                executor.submit(
+                    _run_prepare_plots_for_model,
+                    vis_cfg,
+                    condition_kwargs['data_alias_enriched_hex'],
+                    model_alias_hex,
+                    epoch,
                 )
-            except Exception as e:
-                logging.warning(f"Error in {spec['output_filename']}: {e}")
-
-        try:
-            create_flux_flux_error_diagram(
-                my_df,
-                columns['org_flux'],
-                columns['noise_flux'],
-                columns['rec_flux'],
-                columns['org_flux_err'],
-                columns['noise_flux_err'],
-                columns['rec_flux_err'],
-                os.path.join(my_output_dir, my_tag + "_" + snr_filename),
             )
-        except Exception as e:
-            logging.warning(f"Error in create_flux_flux_error_diagram: {e}")
 
-        logging.info(f"Saved plots for subset '{my_tag}' -> {my_output_dir}")
-
-    out_csv = os.path.join(_output_dir, 'all_metrics.csv')
-    ensure_parent_dir_exists(out_csv)
-    all_metrics.to_csv(out_csv, index=False)
-    logging.info(f"All metrics written to {out_csv} ({len(all_metrics)} rows).")
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as err:
+                logging.warning('prepare_plots worker failed: %s', err)
 
 
 if __name__ == "__main__":

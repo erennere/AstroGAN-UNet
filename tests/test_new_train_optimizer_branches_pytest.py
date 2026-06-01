@@ -33,24 +33,20 @@ def test_instantiate_optimizer_signature_introspection_failure(monkeypatch: pyte
 
 @pytest.mark.unit
 def test_instantiate_optimizer_typeerror_fallback_constructor():
+    """Verify that a TypeError from the optimizer factory propagates (no silent fallback)."""
     import src.training.new_train as new_train_mod
 
     class Factory:
-        def __init__(self):
-            self.calls = 0
-
         def __call__(self, **kwargs):
-            self.calls += 1
             if kwargs:
                 raise TypeError('kwargs not accepted')
-            return {'ok': True, 'calls': self.calls}
+            return {'ok': True}
 
     original_signature = new_train_mod.inspect.signature
     new_train_mod.inspect.signature = lambda *_: (_ for _ in ()).throw(ValueError('no signature'))
     factory = Factory()
     try:
-        out = _instantiate_optimizer(factory, {'foo': 1})
-        assert out['ok'] is True
-        assert out['calls'] == 2
+        with pytest.raises(TypeError, match='kwargs not accepted'):
+            _instantiate_optimizer(factory, {'foo': 1})
     finally:
         new_train_mod.inspect.signature = original_signature

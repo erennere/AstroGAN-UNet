@@ -183,19 +183,20 @@ def test_find_best_performing_models_continue_branches(monkeypatch: pytest.Monke
     def filter_model(files, *_args):
         return files
 
-    def condition(model_info):
+    def condition(model_info, condition_kwargs=None):
+        # Return an all-False mask so filtered_info is empty → continue branch
         if isinstance(model_info, pd.DataFrame):
-            raise RuntimeError('force fallback condition path')
+            return pd.Series([False] * len(model_info), index=model_info.index)
         return False
 
     monkeypatch.setattr(metrics_mod.glob, 'glob', fake_glob)
+    monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda *_: {'model_alias_hex': 'test_alias', 'data_alias_enriched_hex': 'test_hex'})
 
     out = metrics_mod.find_best_performing_models(
         str(models_root),
         condition,
         filter_model,
         '*.keras',
-        n=1,
         index=0,
         concurrent_workers=1,
     )
@@ -213,13 +214,13 @@ def test_find_best_performing_models_selected_models_empty_continue(monkeypatch:
     ckpt.write_text('x', encoding='utf-8')
 
     monkeypatch.setattr(metrics_mod.glob, 'glob', lambda pattern: [str(ckpt)])
+    monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda *_: {'model_alias_hex': 'test_alias'})
 
     out = metrics_mod.find_best_performing_models(
         str(models_root),
-        lambda _info: True,
+        lambda _info, _kwargs=None: True,
         lambda _files, *_args: [],
         '*.keras',
-        n=1,
         index=0,
         concurrent_workers=1,
     )
@@ -229,11 +230,11 @@ def test_find_best_performing_models_selected_models_empty_continue(monkeypatch:
 @pytest.mark.unit
 def test_reconstruct_patch_remaining_paths(monkeypatch: pytest.MonkeyPatch):
     class ModelOK:
-        def predict(self, arr):
+        def predict(self, arr, verbose=0):
             return np.asarray(arr)
 
     class ModelFail:
-        def predict(self, _arr):
+        def predict(self, _arr, verbose=0):
             raise RuntimeError('predict-fail')
 
     img = np.ones((4, 4), dtype=np.float32)
@@ -395,7 +396,7 @@ def test_main_get_test_images_exception_and_none_branches(tmp_path: Path, monkey
         frac=0.1,
         condition=metrics_mod.condition,
         filter_model=metrics_mod.get_model_by_modulo,
-        n=1,
+        modulo=1,
         model_prototype='*.keras',
         all_metrics_csv=str(tmp_path / 'all.csv'),
     )
@@ -412,7 +413,7 @@ def test_main_get_test_images_exception_and_none_branches(tmp_path: Path, monkey
         frac=0.1,
         condition=metrics_mod.condition,
         filter_model=metrics_mod.get_model_by_modulo,
-        n=1,
+        modulo=1,
         model_prototype='*.keras',
         all_metrics_csv=str(tmp_path / 'all2.csv'),
     )
@@ -421,9 +422,16 @@ def test_main_get_test_images_exception_and_none_branches(tmp_path: Path, monkey
 
 @pytest.mark.unit
 def test_main_parallel_future_none_and_nonparallel_exception(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    checkpoint_path = tmp_path / 'models' / 'm' / 'checkpoints' / 'a.keras'
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text('x', encoding='utf-8')
     monkeypatch.setattr(metrics_mod, 'get_test_images', lambda *args, **kwargs: pd.DataFrame({'x': [1]}))
     monkeypatch.setattr(metrics_mod, 'ensure_parent_dir_exists', lambda *args, **kwargs: None)
-    monkeypatch.setattr(metrics_mod, 'find_best_performing_models', lambda *args, **kwargs: {'m': ['a.keras']})
+    monkeypatch.setattr(
+        metrics_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {'m': pd.DataFrame({'filepath': [str(checkpoint_path)], 'epoch': ['001']})},
+    )
     monkeypatch.setattr(metrics_mod, 'decide_scale', lambda *_args, **_kwargs: None)
     monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda *_args, **_kwargs: {'model_alias_hex': 'h'})
 
@@ -453,7 +461,7 @@ def test_main_parallel_future_none_and_nonparallel_exception(monkeypatch: pytest
         frac=0.1,
         condition=metrics_mod.condition,
         filter_model=metrics_mod.get_model_by_modulo,
-        n=1,
+        modulo=1,
         model_prototype='*.keras',
         parallel=True,
         all_metrics_csv=str(tmp_path / 'all.csv'),
@@ -470,7 +478,7 @@ def test_main_parallel_future_none_and_nonparallel_exception(monkeypatch: pytest
         frac=0.1,
         condition=metrics_mod.condition,
         filter_model=metrics_mod.get_model_by_modulo,
-        n=1,
+        modulo=1,
         model_prototype='*.keras',
         parallel=False,
         all_metrics_csv=str(tmp_path / 'all2.csv'),
@@ -479,7 +487,8 @@ def test_main_parallel_future_none_and_nonparallel_exception(monkeypatch: pytest
 
 @pytest.mark.unit
 def test_condition_and_module_main_guard(monkeypatch: pytest.MonkeyPatch):
-    assert metrics_mod.condition([1, 2, 3]) == [True, True, True]
+    _df = pd.DataFrame({'data_alias_enriched_hex': ['a', 'a', 'a']})
+    assert list(metrics_mod.condition(_df, {'data_alias_enriched_hex': 'a'})) == [True, True, True]
 
     monkeypatch.delenv('CUDA_VISIBLE_DEVICES', raising=False)
     monkeypatch.setattr(starter, 'parse_config_overrides', lambda *args, **kwargs: {})
@@ -489,13 +498,20 @@ def test_condition_and_module_main_guard(monkeypatch: pytest.MonkeyPatch):
         lambda **kwargs: {
             'metrics': {
                 'models_dir': 'models',
-                'data_kwargs': {},
+                'data_kwargs': {
+                    'kwargs_data': {
+                        'data_alias_enriched_hex': 'test_hex',
+                        'model_alias_hex': 'null',
+                        'log_domain_clip_max': 100.0,
+                    }
+                },
                 'model_kwargs': {},
                 'kwargs_source': {},
                 'total_workers': 1,
                 'max_workers': 1,
                 'frac': 0.1,
-                'n': 1,
+                'modulo': 1,
+                'checkpoint_info_filename': 'checkpoint_info.json',
                 'model_prototype': '*.keras',
                 'all_metrics_csv': 'all.csv',
                 'aggregated_metrics_csv': 'agg.csv',
@@ -508,5 +524,6 @@ def test_condition_and_module_main_guard(monkeypatch: pytest.MonkeyPatch):
             }
         },
     )
+    monkeypatch.setattr(metrics_mod, 'main', lambda *args, **kwargs: None)
     monkeypatch.setattr(sys, 'argv', ['metrics.py', '3', '4'])
     runpy.run_module('src.evaluation.metrics', run_name='__main__')

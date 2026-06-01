@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import runpy
 import sys
+import concurrent.futures
 from pathlib import Path
 
 import matplotlib
@@ -18,6 +19,28 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.visualization import prepare_plots as plots_mod
+
+
+class _Future:
+    def __init__(self, value=None):
+        self._value = value
+
+    def result(self):
+        return self._value
+
+
+class _Executor:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def submit(self, fn, *args, **kwargs):
+        return _Future(fn(*args, **kwargs))
 
 
 @pytest.mark.unit
@@ -149,8 +172,16 @@ def test_prepare_paired_panel_explicit_shared_and_separate_mask_branches(monkeyp
 
 @pytest.mark.unit
 def test_prepare_plots_module_main_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    from src.evaluation import metrics as metrics_mod
+
     cfg = {
         'prepare_plots': {
+            'data_alias_enriched_hex': 'data_alias',
+            'model_alias_hex': 'model_alias_cfg',
+            'models_dir': str(tmp_path / 'models'),
+            'model_prototype': '*.keras',
+            'modulo': 1,
+            'max_workers': 1,
             'output_dir': str(tmp_path / 'out_main_guard'),
             'uncropped_output_dir': str(tmp_path),
             'photometrical_data_filename': 'missing.parquet',
@@ -164,6 +195,15 @@ def test_prepare_plots_module_main_guard(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
     monkeypatch.setattr(starter, 'parse_config_overrides', lambda *args, **kwargs: {})
     monkeypatch.setattr(starter, 'load_config', lambda **kwargs: cfg)
+    monkeypatch.setattr(
+        metrics_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {
+            'm': pd.DataFrame({'model_alias_hex': ['model_alias'], 'epoch': [1]})
+        },
+    )
+    monkeypatch.setattr(concurrent.futures, 'ProcessPoolExecutor', _Executor)
+    monkeypatch.setattr(concurrent.futures, 'as_completed', lambda futures: futures)
     with pytest.raises(FileNotFoundError):
         runpy.run_module('src.visualization.prepare_plots', run_name='__main__')
 
@@ -218,6 +258,12 @@ def test_create_flux_flux_error_diagram_skips_empty_positive_flux(tmp_path: Path
 def test_prepare_plots_main_validation_and_error_catch_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     base_cfg = {
         'prepare_plots': {
+            'data_alias_enriched_hex': 'data_alias',
+            'model_alias_hex': 'model_alias_cfg',
+            'models_dir': str(tmp_path / 'models'),
+            'model_prototype': '*.keras',
+            'modulo': 1,
+            'max_workers': 1,
             'output_dir': str(tmp_path / 'out'),
             'uncropped_output_dir': str(tmp_path),
             'photometrical_data_filename': 'data.parquet',
@@ -229,7 +275,16 @@ def test_prepare_plots_main_validation_and_error_catch_branches(tmp_path: Path, 
         }
     }
 
-    monkeypatch.setattr(plots_mod, 'parse_config_overrides', lambda: {})
+    monkeypatch.setattr(plots_mod, 'parse_config_overrides', lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        plots_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {
+            'm': pd.DataFrame({'model_alias_hex': ['model_alias'], 'epoch': [1]})
+        },
+    )
+    monkeypatch.setattr(plots_mod, 'ProcessPoolExecutor', _Executor)
+    monkeypatch.setattr(plots_mod, 'as_completed', lambda futures: futures)
 
     bad_len = {**base_cfg}
     bad_len['prepare_plots'] = {**base_cfg['prepare_plots'], 'norm_quantiles': [5]}
@@ -263,6 +318,12 @@ def test_prepare_plots_main_catches_render_and_snr_exceptions(tmp_path: Path, mo
 
     cfg = {
         'prepare_plots': {
+            'data_alias_enriched_hex': 'data_alias',
+            'model_alias_hex': 'model_alias_cfg',
+            'models_dir': str(tmp_path / 'models'),
+            'model_prototype': '*.keras',
+            'modulo': 1,
+            'max_workers': 1,
             'output_dir': str(tmp_path / 'out'),
             'uncropped_output_dir': str(tmp_path),
             'photometrical_data_filename': parquet_path.name,
@@ -271,6 +332,7 @@ def test_prepare_plots_main_catches_render_and_snr_exceptions(tmp_path: Path, mo
             'rec_cmap': 'viridis',
             'noise_cmap': 'plasma',
             'norm_quantiles': [5, 95],
+            'snr_filename': 'snr.png',
         }
     }
 
@@ -291,7 +353,16 @@ def test_prepare_plots_main_catches_render_and_snr_exceptions(tmp_path: Path, mo
         'a_flux_err_rec': [0.1],
     })
 
-    monkeypatch.setattr(plots_mod, 'parse_config_overrides', lambda: {})
+    monkeypatch.setattr(plots_mod, 'parse_config_overrides', lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        plots_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {
+            'm': pd.DataFrame({'model_alias_hex': ['model_alias'], 'epoch': [1]})
+        },
+    )
+    monkeypatch.setattr(plots_mod, 'ProcessPoolExecutor', _Executor)
+    monkeypatch.setattr(plots_mod, 'as_completed', lambda futures: futures)
     monkeypatch.setattr(plots_mod, 'load_config', lambda **kwargs: cfg)
     monkeypatch.setattr(plots_mod.os.path, 'exists', lambda path: str(path).endswith('data.parquet') or str(path).endswith('edited_data.parquet'))
     monkeypatch.setattr(plots_mod.pd, 'read_parquet', lambda *args, **kwargs: df.copy())

@@ -98,8 +98,8 @@ class StarterHelperTests(unittest.TestCase):
             npixels=11,
         )
         models_dir = (
-            '/tmp/models/UNET/NOATTN/MAE/'
-            f"{data_signature['data_alias_enriched_hex']}/min_max/DO0p5/ACTrelu/OUTsigmoid/DACTleakyrelu/DOUTnone"
+            '/tmp/models/'
+            f"{data_signature['data_alias_enriched_hex']}/UNET/NOATTN/MAE/min_max/DO0p5/ACTrelu/OUTsigmoid/DACTleakyrelu/DOUTnone"
         )
 
         decoded = _decode_models_dir(models_dir)

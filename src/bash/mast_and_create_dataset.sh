@@ -16,12 +16,11 @@
 #   Script assumes it is launched from the src/ directory.
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Project root. Default assumes current working directory is src/.
-: "${AUN_PROJECT_ROOT:=$(cd .. && pwd)}"
+set -euo pipefail
 
-# Conda environment path (created by setup_hpc_environment.sh)
-: "${AUN_ENV_PATH:=${AUN_PROJECT_ROOT}/.venv}"
-: "${AUN_CONDA_BASE:=${HOME}/.local/miniconda3}"
+source bash/utils.sh
+
+init_aun_paths
 
 # Pipeline stage toggles (set to false to skip a stage).
 : "${AUN_RUN_MAST:=true}"
@@ -45,42 +44,18 @@ LAST_NAME_FILTER=(                ""        ""     ""     MOMCHEVA )
 # Explicit runtime values (no auto-detection)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Logging destination (can be overridden). Default: <project_root>/logs
-: "${AUN_LOG_DIR:=${AUN_PROJECT_ROOT}/logs}"
-mkdir -p "${AUN_LOG_DIR}"
-
-LOG_TS="$(date +%Y%m%d_%H%M%S)"
-LOG_JOB_ID="${SLURM_JOB_ID:-local}"
-LOG_FILE="${AUN_LOG_DIR}/mast_and_create_dataset_${LOG_JOB_ID}_${LOG_TS}.log"
-
-# Mirror stdout/stderr to both console and log file.
-exec > >(tee -a "${LOG_FILE}") 2>&1
+setup_aun_logging "mast_and_create_dataset"
 
 echo "Project root : ${AUN_PROJECT_ROOT}"
 echo "Conda env    : ${AUN_ENV_PATH}"
-echo "Log file     : ${LOG_FILE}"
+echo "Log file     : ${AUN_LOG_FILE}"
 
-# Activate conda environment from a prefix path
-if [[ -f "${AUN_CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
-    source "${AUN_CONDA_BASE}/etc/profile.d/conda.sh"
-    conda activate "${AUN_ENV_PATH}"
-    echo "Activated conda environment: ${CONDA_PREFIX}"
-else
-    echo "ERROR: Conda base not found at ${AUN_CONDA_BASE}"
-    echo "Set AUN_CONDA_BASE or run: bash bash/setup_hpc_environment.sh"
-    exit 1
-fi
-
-if [[ "${CONDA_PREFIX:-}" != "${AUN_ENV_PATH}" ]]; then
-    echo "ERROR: Expected active env ${AUN_ENV_PATH}, got ${CONDA_PREFIX:-<none>}"
-    echo "Run: bash bash/setup_hpc_environment.sh"
-    exit 1
-fi
+activate_aun_env
+echo "Activated conda environment: ${CONDA_PREFIX}"
+require_aun_env_active
 
 # Work from the src/ subdirectory.
-cd "${AUN_PROJECT_ROOT}/src"
-# Keep project root on PYTHONPATH so absolute imports like `from src...` work.
-export PYTHONPATH="${AUN_PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+enter_aun_src
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper: build CLI args for job index $1 and run create_dataset

@@ -3,60 +3,33 @@
 #SBATCH --output=../logs/train_model_scenarios_%j.out
 #SBATCH --error=../errs/train_model_scenarios_%j.err
 #SBATCH --partition=gpu-single
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=64
 #SBATCH --gres=gpu:A40:1
-#SBATCH --mem=32gb
+#SBATCH --mem=234gb
 #SBATCH --time=96:00:00
 #SBATCH --array=1-10%10
 
 # Number of CPU cores per job (N). Keep this in sync with
 # '#SBATCH --cpus-per-task' above, or override at submit time with e.g.
-# sbatch --cpus-per-task=16 bash/train_model_scenarios.sh
-N=8
+# sbatch --cpus-per-task=64 bash/train_model_scenarios.sh
+set -euo pipefail
+
+N=64
 TOTAL_WORKERS=10
 
-# Project root. Default assumes current working directory is src/.
-: "${AUN_PROJECT_ROOT:=$(cd .. && pwd)}"
+source bash/utils.sh
 
-# Conda environment path (created by setup_hpc_environment.sh)
-: "${AUN_ENV_PATH:=${AUN_PROJECT_ROOT}/.venv}"
-: "${AUN_CONDA_BASE:=${HOME}/.local/miniconda3}"
-
-if [[ -n "${SLURM_CPUS_PER_TASK}" && "${SLURM_CPUS_PER_TASK}" != "${N}" ]]; then
-    echo "WARNING: N=${N} but SLURM_CPUS_PER_TASK=${SLURM_CPUS_PER_TASK}. Using SLURM_CPUS_PER_TASK."
-    N="${SLURM_CPUS_PER_TASK}"
-fi
-
-# Activate conda environment from a prefix path
-if [[ -f "${AUN_CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
-    source "${AUN_CONDA_BASE}/etc/profile.d/conda.sh"
-    conda activate "${AUN_ENV_PATH}"
-    echo "Activated conda environment: ${CONDA_PREFIX}"
-else
-    echo "ERROR: Conda base not found at ${AUN_CONDA_BASE}"
-    echo "Set AUN_CONDA_BASE or run: bash bash/setup_hpc_environment.sh"
-    exit 1
-fi
-
-if [[ "${CONDA_PREFIX:-}" != "${AUN_ENV_PATH}" ]]; then
-    echo "ERROR: Expected active env ${AUN_ENV_PATH}, got ${CONDA_PREFIX:-<none>}"
-    echo "Run: bash bash/setup_hpc_environment.sh"
-    exit 1
-fi
+init_aun_paths
+setup_aun_logging "train_model_scenarios"
+configure_aun_threads "${N}"
+N="${AUN_EFFECTIVE_THREADS}"
+activate_aun_env
+echo "Activated conda environment: ${CONDA_PREFIX}"
+require_aun_env_active
+enter_aun_src
 
 #module use /gpfs/bwfor/home/hd/hd_hd/hd_nk194/modules/modulefiles
 #module load lib/cudnn/9.4.0-cuda-12.6
-
-# Logging destination.
-: "${AUN_LOG_DIR:=${AUN_PROJECT_ROOT}/logs}"
-mkdir -p "${AUN_LOG_DIR}"
-
-LOG_TS="$(date +%Y%m%d_%H%M%S)"
-LOG_JOB_ID="${SLURM_JOB_ID:-local}"
-LOG_FILE="${AUN_LOG_DIR}/train_model_scenarios_${LOG_JOB_ID}_${LOG_TS}.log"
-exec > >(tee -a "${LOG_FILE}") 2>&1
 
 # Full experiment set (cartesian product):
 #   model (2) x attention (2) x scaling (4) x loss (4) = 64 scenarios.
@@ -188,15 +161,10 @@ run_job() {
     echo "Conda env    : ${AUN_ENV_PATH}"
     echo "Cores/job (N): ${N}"
     echo "GPU request  : gpu:1 (constraint=gpu4)"
-    echo "Log file     : ${LOG_FILE}"
+    echo "Log file     : ${AUN_LOG_FILE}"
     echo "[Job ${idx}] model=${MODEL_TYPE[$idx]} attention=${ATTENTION[$idx]} scaling=${SCALING[$idx]} loss=${LOSS_NAME[$idx]} dropout=${DROPOUT_RATE[$idx]} out_act=${OUTPUT_ACTIVATION[$idx]} init=${KERNEL_INITIALIZER[$idx]} act=${ACTIVATION_NAME[$idx]} d_act=${DISCRIMINATOR_ACTIVATION[$idx]} d_out=${DISCRIMINATOR_OUTPUT_ACTIVATION[$idx]}"
     echo "[Job ${idx}] srun --ntasks=1 --cpus-per-task=${N} --cpu-bind=cores python -m src.training.new_train ${args[*]}"
 
-    cd "${AUN_PROJECT_ROOT}/src"
-    export PYTHONPATH="${AUN_PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
-    export OMP_NUM_THREADS="${N}"
-    export MKL_NUM_THREADS="${N}"
-    export OPENBLAS_NUM_THREADS="${N}"
     srun --ntasks=1 --cpus-per-task="${N}" --cpu-bind=cores \
         python -m src.training.new_train "${args[@]}"
 }

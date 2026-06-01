@@ -100,7 +100,12 @@ def test_run_from_config_builds_paths_and_calls_process(monkeypatch: pytest.Monk
         'merge_catalog_threshold': 3.5,
     }
 
-    merge_mod._run_from_config(eval_cfg)
+    merge_mod._run_from_config(
+        eval_cfg,
+        data_alias_enriched_hex='data_alias',
+        model_alias_hex='model_alias',
+        epoch=10,
+    )
 
     assert len(calls) == 1
     payload = calls[0]
@@ -152,6 +157,7 @@ def test_process_handles_future_exception(monkeypatch: pytest.MonkeyPatch, tmp_p
 @pytest.mark.unit
 def test_module_main_guard_executes_with_stubbed_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     import starter
+    from src.evaluation import metrics as metrics_mod
 
     data = pd.DataFrame(
         {
@@ -172,6 +178,11 @@ def test_module_main_guard_executes_with_stubbed_config(monkeypatch: pytest.Monk
 
     cfg = {
         'merge_catalogs': {
+            'data_alias_enriched_hex': 'data_alias',
+            'model_alias_hex': 'model_alias_from_cfg',
+            'models_dir': str(tmp_path),
+            'model_prototype': '*.keras',
+            'modulo': 1,
             'uncropped_output_dir': str(tmp_path),
             'uncropped_rec_catalog_csv': 'rec.csv',
             'uncropped_noisy_catalog_csv': 'noise.csv',
@@ -179,8 +190,21 @@ def test_module_main_guard_executes_with_stubbed_config(monkeypatch: pytest.Monk
             'photometrical_data_filename': 'photo.parquet',
             'merge_catalog_workers': 1,
             'merge_catalog_threshold': 3.5,
+            'max_workers': 1,
         }
     }
+
+    fake_models_df = pd.DataFrame(
+        {
+            'model_alias_hex': ['model_alias'],
+            'epoch': [12],
+        }
+    )
+    monkeypatch.setattr(
+        metrics_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {'dummy/model/dir': fake_models_df},
+    )
 
     monkeypatch.setattr(starter, 'parse_config_overrides', lambda *args, **kwargs: {})
     monkeypatch.setattr(starter, 'load_config', lambda **kwargs: cfg)

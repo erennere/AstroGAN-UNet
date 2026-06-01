@@ -44,6 +44,7 @@ def test_detect_sources_in_image_fallback_background_and_deblend_timeout(monkeyp
         'footprint_radius': 3,
         'deblend': True,
         'deblend_timeout': 0.0001,
+        'bkg_box_size': 16,
     }
 
     result = metrics_mod.detect_sources_in_image(image, kwargs)
@@ -83,6 +84,7 @@ def test_extract_sources_returns_dataframe_and_mask():
         'deblend_cont': 0.005,
         'clean': True,
         'clean_param': 1.0,
+        'flux_radius_subpix': 5,
     }
 
     df, mask = metrics_mod.extract_sources(image, 'reconstructed', kwargs)
@@ -91,6 +93,59 @@ def test_extract_sources_returns_dataframe_and_mask():
     for column in ('x', 'y', 'flux_err', 'kron_radius', 'is_galaxy'):
         assert column in df.columns
     assert 'flux' in df.columns or 'flux_y' in df.columns
+
+
+@pytest.mark.unit
+def test_extract_sources_keeps_canonical_flux_when_sep_extract_has_flux(monkeypatch: pytest.MonkeyPatch):
+    class FakeBackground:
+        def __init__(self, image):
+            self._shape = image.shape
+
+        def __array__(self, dtype=None):
+            arr = np.zeros(self._shape, dtype=np.float32)
+            return arr.astype(dtype) if dtype is not None else arr
+
+        def rms(self):
+            return np.ones(self._shape, dtype=np.float32)
+
+    def fake_extract(*args, **kwargs):
+        dtype = np.dtype([
+            ('x', 'f8'), ('y', 'f8'), ('a', 'f8'), ('b', 'f8'), ('theta', 'f8'),
+            ('flux', 'f8')
+        ])
+        return np.array([(10.0, 20.0, 2.5, 1.5, 0.1, 123.0)], dtype=dtype)
+
+    monkeypatch.setattr(metrics_mod.sep, 'Background', FakeBackground)
+    monkeypatch.setattr(metrics_mod.sep, 'extract', fake_extract)
+    monkeypatch.setattr(metrics_mod.sep, 'kron_radius', lambda *a, **k: (np.array([2.0]), np.array([0], dtype=np.int16)))
+    monkeypatch.setattr(metrics_mod.sep, 'sum_ellipse', lambda *a, **k: (np.array([42.0]), np.array([0.5]), np.array([0], dtype=np.int16)))
+    monkeypatch.setattr(metrics_mod.sep, 'sum_circle', lambda *a, **k: (np.array([], dtype=float), np.array([], dtype=float), np.array([], dtype=np.int16)))
+    monkeypatch.setattr(metrics_mod.sep, 'flux_radius', lambda *a, **k: (np.array([1.2]), np.array([0], dtype=np.int16)))
+    monkeypatch.setattr(metrics_mod.sep, 'mask_ellipse', lambda *a, **k: None)
+
+    kwargs = {
+        'thresh': 1.5,
+        'org_thresh': 1.2,
+        'radius_factor': 6.0,
+        'PHOT_FLUXFRAC': 0.5,
+        'r_min': 3.5,
+        'elongation_fraction': 1.0,
+        'PHOT_AUTOPARAMS': 2.5,
+        'maskthresh': 0.0,
+        'minarea': 5,
+        'org_minarea': 5,
+        'filter_type': 'matched',
+        'deblend_nthresh': 16,
+        'deblend_cont': 0.005,
+        'clean': True,
+        'clean_param': 1.0,
+        'flux_radius_subpix': 5,
+    }
+
+    df, _ = metrics_mod.extract_sources(np.ones((32, 32), dtype=np.float32), 'reconstructed', kwargs)
+    assert 'flux' in df.columns
+    assert 'flux_y' not in df.columns
+    assert df['flux'].iat[0] == pytest.approx(42.0)
 
 
 @pytest.mark.unit
@@ -107,7 +162,7 @@ def test_compare_images_wrap_extract_sources_path(monkeypatch: pytest.MonkeyPatc
         }
     )
 
-    def fake_wrap(image, flag, kwargs):
+    def wrap_extract_sources(image, flag, kwargs):
         if flag == 'reconstructed':
             x = np.array([5.1, np.nan, 15.2], dtype=float)
             y = np.array([6.1, np.nan, 16.3], dtype=float)
@@ -124,7 +179,7 @@ def test_compare_images_wrap_extract_sources_path(monkeypatch: pytest.MonkeyPatc
         df = base_df.copy()
         return x, y, flux, flux_err, mask, df['a'].to_numpy(), df['b'].to_numpy(), df['theta'].to_numpy(), df
 
-    monkeypatch.setattr(metrics_mod, 'wrap_extract_sources', fake_wrap)
+    monkeypatch.setattr(metrics_mod, 'wrap_extract_sources', wrap_extract_sources)
     monkeypatch.setattr(metrics_mod, 'plot_source_comparison_sep', lambda *args, **kwargs: None)
 
     image = np.ones((32, 32), dtype=np.float32)
@@ -448,6 +503,12 @@ def test_prepare_plots_main_runs_with_mocked_dependencies(tmp_path: Path, monkey
 
     cfg = {
         'prepare_plots': {
+            'data_alias_enriched_hex': 'data_alias',
+            'model_alias_hex': 'model_alias_cfg',
+            'models_dir': str(tmp_path / 'models'),
+            'model_prototype': '*.keras',
+            'modulo': 1,
+            'max_workers': 1,
             'output_dir': str(output_dir),
             'uncropped_output_dir': str(uncropped_dir),
             'photometrical_data_filename': 'photometry.parquet',
@@ -456,6 +517,8 @@ def test_prepare_plots_main_runs_with_mocked_dependencies(tmp_path: Path, monkey
             'rec_cmap': 'viridis',
             'noise_cmap': 'plasma',
             'norm_quantiles': [5, 95],
+            'jansky_factor': 33356.4,
+            'snr_filename': 'snr.png',
         }
     }
 
@@ -469,9 +532,22 @@ def test_prepare_plots_main_runs_with_mocked_dependencies(tmp_path: Path, monkey
         }
     )
 
-    monkeypatch.setattr(plots_mod, 'parse_config_overrides', lambda: {})
+    monkeypatch.setattr(plots_mod, 'parse_config_overrides', lambda *args, **kwargs: {})
     monkeypatch.setattr(plots_mod, 'load_config', lambda **kwargs: cfg)
-    monkeypatch.setattr(plots_mod, 'add_columns', lambda df: augmented_df.copy())
+    monkeypatch.setattr(
+        plots_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {
+            'm': pd.DataFrame({'model_alias_hex': ['model_alias'], 'epoch': [1]})
+        },
+    )
+    monkeypatch.setattr(plots_mod, 'ProcessPoolExecutor', lambda *args, **kwargs: type('E', (), {
+        '__enter__': lambda self: self,
+        '__exit__': lambda self, exc_type, exc_val, exc_tb: False,
+        'submit': lambda self, fn, *a, **k: type('F', (), {'result': lambda self: fn(*a, **k)})(),
+    })())
+    monkeypatch.setattr(plots_mod, 'as_completed', lambda futures: futures)
+    monkeypatch.setattr(plots_mod, 'add_columns', lambda df, jansky_factor=None: augmented_df.copy())
     monkeypatch.setattr(
         plots_mod,
         'create_table',

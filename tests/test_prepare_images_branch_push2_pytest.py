@@ -81,7 +81,13 @@ def test_plot_source_comparison_sep_validation_and_coordinate_skip(monkeypatch: 
 def test_main_missing_metadata_and_none_metadata_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     missing_cfg = {
         'prepare_images': {
-            'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
+            'data_kwargs': {
+                'nan_value': 0.0,
+                'posinf_value': 0.0,
+                'neginf_value': 0.0,
+                'log_domain_clip_max': 1.0,
+                'model_alias_hex': 'model_alias_from_cfg',
+            },
             'output_dir': str(tmp_path / 'out'),
             'low': 1,
             'metadata_filepath': str(tmp_path / 'missing.csv'),
@@ -97,20 +103,46 @@ def test_main_missing_metadata_and_none_metadata_paths(tmp_path: Path, monkeypat
             'ratio_growth': 1,
             'model_dir': 'models',
             'model_prototype': '*.keras',
+            'modulo': 1,
             'scaling': 'min_max',
+            'checkpoint_info_filename': 'checkpoint_info.txt',
+            'data_alias_enriched_hex': 'data_alias',
+            'max_workers': 1,
         }
     }
 
-    monkeypatch.setattr(prep_images_mod, 'parse_config_overrides', lambda: {})
+    monkeypatch.setattr(prep_images_mod, 'parse_config_overrides', lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        prep_images_mod,
+        'parse_runtime_selector_cli_args',
+        lambda *args, **kwargs: {
+            'index': 0,
+            'concurrent_workers': 1,
+            'data_alias_enriched_hex': 'data_alias',
+            'model_alias_hex': 'model_alias',
+            'epoch': None,
+            'cursor': 1,
+        },
+    )
     monkeypatch.setattr(prep_images_mod, 'load_config', lambda **kwargs: missing_cfg)
-    monkeypatch.setattr(prep_images_mod, 'find_best_performing_models', lambda *args, **kwargs: 'dummy.keras')
+    monkeypatch.setattr(
+        prep_images_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {'m': pd.DataFrame({'filepath': ['dummy.keras'], 'epoch': ['001']})},
+    )
     monkeypatch.setattr(prep_images_mod, 'read_checkpoint_info', lambda *_: {'scaling': 'min_max'})
     monkeypatch.setattr(prep_images_mod, 'load_checkpoint_model', lambda *args, **kwargs: object())
     prep_images_mod.main()
 
     none_meta_cfg = {
         'prepare_images': {
-            'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
+            'data_kwargs': {
+                'nan_value': 0.0,
+                'posinf_value': 0.0,
+                'neginf_value': 0.0,
+                'log_domain_clip_max': 1.0,
+                'model_alias_hex': 'model_alias_from_cfg',
+            },
             'output_dir': str(tmp_path / 'out2'),
             'low': 1,
             'metadata_filepath': None,
@@ -126,7 +158,11 @@ def test_main_missing_metadata_and_none_metadata_paths(tmp_path: Path, monkeypat
             'ratio_growth': 1,
             'model_dir': 'models',
             'model_prototype': '*.keras',
+            'modulo': 1,
             'scaling': 'min_max',
+            'checkpoint_info_filename': 'checkpoint_info.txt',
+            'data_alias_enriched_hex': 'data_alias',
+            'max_workers': 1,
         }
     }
 
@@ -231,7 +267,13 @@ def test_compare_images_shape_mismatch_and_source_exception_and_tree_exception()
 def test_prepare_images_module_main_guard(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     cfg = {
         'prepare_images': {
-            'data_kwargs': {'nan_value': 0.0, 'posinf_value': 0.0, 'neginf_value': 0.0},
+            'data_kwargs': {
+                'nan_value': 0.0,
+                'posinf_value': 0.0,
+                'neginf_value': 0.0,
+                'log_domain_clip_max': 1.0,
+                'model_alias_hex': 'model_alias_from_cfg',
+            },
             'output_dir': str(tmp_path / 'out_main_guard'),
             'low': 1,
             'metadata_filepath': str(tmp_path / 'missing_from_main_guard.csv'),
@@ -247,7 +289,11 @@ def test_prepare_images_module_main_guard(monkeypatch: pytest.MonkeyPatch, tmp_p
             'ratio_growth': 1,
             'model_dir': 'models',
             'model_prototype': '*.keras',
+            'modulo': 1,
             'scaling': 'min_max',
+            'checkpoint_info_filename': 'checkpoint_info.txt',
+            'data_alias_enriched_hex': 'data_alias',
+            'max_workers': 1,
         }
     }
 

@@ -121,7 +121,7 @@ def test_decode_model_alias_validation_and_dropout_parse_paths(monkeypatch: pyte
 def test_decode_models_dir_dropout_non_float_path(monkeypatch: pytest.MonkeyPatch):
     data_sig = starter._encode_data_signature(True, ['IR'], False, [], 3, 7, 9)
     models_dir = (
-        f"/tmp/models/UNET/NOATTN/MSE/{data_sig['data_alias_enriched_hex']}/none/DOabc/"
+        f"/tmp/models/{data_sig['data_alias_enriched_hex']}/UNET/NOATTN/MSE/none/DOabc/"
         "ACTrelu/OUTsigmoid/DACTrelu/DOUTsigmoid"
     )
     out = starter._decode_models_dir(models_dir)

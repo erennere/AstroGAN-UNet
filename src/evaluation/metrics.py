@@ -1,8 +1,10 @@
 """Evaluation pipeline for model/image metrics and source catalogs."""
 
 import os, glob, logging
+import queue
 import random
 import sys
+import threading
 from PIL import Image
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import numpy as np
@@ -34,7 +36,84 @@ from src.training.new_train import data_augment_pluggable
 from src.training.math_helpers import _simulated_image_from_exposure, _simulated_image_from_poisson, adaptive_log_transform_and_normalize, inverse_adaptive_log_transform_and_denormalize, min_max_normalization, inverse_min_max_normalization, zscore_normalization, inverse_zscore_normalization, set_log_domain_clip_max
 from src.training.utils import open_fits, save_fits, ensure_directory_exists, ensure_parent_dir_exists, build_checkpoint_custom_objects, load_checkpoint_model, read_checkpoint_info, set_checkpoint_info_filename
 from starter import _decode_models_dir, load_config, parse_config_overrides  #sym:parse_config_overrides
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
+def parse_runtime_selector_cli_args(argv=None, start_index=1):
+    """Parse optional positional runtime selectors from CLI args.
+
+    Expected positional arguments (in order) are:
+    1) index (int)
+    2) concurrent_workers (int)
+    3) data_alias_enriched_hex (str or null-like)
+    4) model_alias_hex (str or null-like)
+    5) epoch (int or null-like)
+
+    Any remaining arguments start at the returned ``cursor`` index.
+    """
+    if argv is None:
+        argv = sys.argv
+
+    def _is_candidate_token(raw_value):
+        value = str(raw_value).strip()
+        if value == '':
+            return False
+        if value.startswith('-'):
+            return False
+        if '=' in value:
+            return False
+        if '/' in value or '\\' in value:
+            return False
+        if value.endswith('.py'):
+            return False
+        return True
+
+    cursor = start_index
+
+    index = 0
+    if len(argv) > cursor and str(argv[cursor]).lstrip('-').isdigit():
+        index = int(argv[cursor])
+        cursor += 1
+
+    concurrent_workers = 1
+    if len(argv) > cursor and str(argv[cursor]).lstrip('-').isdigit():
+        concurrent_workers = int(argv[cursor])
+        cursor += 1
+
+    data_alias_enriched_hex = None
+    if len(argv) > cursor and _is_candidate_token(argv[cursor]):
+        value = str(argv[cursor]).strip()
+        if value != '' and value.lower() not in {'none', 'null', 'nan'}:
+            data_alias_enriched_hex = value
+        cursor += 1
+
+    model_alias_hex = None
+    if len(argv) > cursor and _is_candidate_token(argv[cursor]):
+        value = str(argv[cursor]).strip()
+        if value != '' and value.lower() not in {'none', 'null', 'nan'}:
+            model_alias_hex = value
+        cursor += 1
+
+    epoch = None
+    if len(argv) > cursor and _is_candidate_token(argv[cursor]):
+        value = str(argv[cursor]).strip()
+        if value != '' and value.lower() not in {'none', 'null'}:
+            if value.lstrip('-').isdigit():
+                epoch = int(value)
+                cursor += 1
+            else:
+                # Leave unknown token for parse_config_overrides.
+                pass
+        else:
+            cursor += 1
+
+    return {
+        'index': index,
+        'concurrent_workers': concurrent_workers,
+        'data_alias_enriched_hex': data_alias_enriched_hex,
+        'model_alias_hex': model_alias_hex,
+        'epoch': epoch,
+        'cursor': cursor,
+    }
 
 def generate_gaussian_weights(patch_size, sigma=64):
     """Generate a 2-D Gaussian weight map for a sliding-window patch.
@@ -323,7 +402,7 @@ def sliding_window_inference(image, model, patch_size=(256, 256, 1),
     try:
         dataset = create_prediction_dataset(image_fully_padded, patch_size, stride, batch_size)
         for patches, positions in dataset:
-            batch_predictions = model.predict(patches)  # Get predictions from the model
+            batch_predictions = model.predict(patches, verbose=0)  # Get predictions from the model
             for (i, j), prediction in zip(positions, batch_predictions):
                 output[i:i + patch_size[0], j:j + patch_size[1], :] += prediction * weights
                 weight_matrix[i:i + patch_size[0], j:j + patch_size[1], :] += weights
@@ -852,7 +931,8 @@ def detect_sources_in_image(image, kwargs):
     """
     required_params = ['sigma', 'maxiters', 'nsigma',
                         'npixels', 'nlevels', 'contrast',
-                        'footprint_radius', 'deblend', 'deblend_timeout']
+                        'footprint_radius', 'deblend', 'deblend_timeout',
+                        'bkg_box_size']
     missing_params = [param for param in required_params if param not in kwargs]
     if missing_params:
         logging.warning('detect_sources_in_image: missing required parameters: %s', ', '.join(missing_params))
@@ -974,7 +1054,6 @@ def extract_sources(image, image_flag, kwargs):
         Boolean ellipse mask marking source pixels.
     """
     # Get parameters from kwargs or set defaults
-
     thresh = kwargs['thresh'] if image_flag != 'original' else kwargs['org_thresh']
     radius_factor = kwargs['radius_factor']  # Factor for Kron radius
     PHOT_FLUXFRAC  = kwargs['PHOT_FLUXFRAC']  # Fraction for flux radius
@@ -989,7 +1068,7 @@ def extract_sources(image, image_flag, kwargs):
     deblend_cont = kwargs['deblend_cont']  # Minimum contrast ratio for deblending
     clean = kwargs['clean']  # Perform cleaning
     clean_param = kwargs['clean_param']  # Cleaning parameter
-    flux_radius_subpix = kwargs.get('flux_radius_subpix', 5)
+    flux_radius_subpix = kwargs['flux_radius_subpix']
 
     # Subtract background using SEP
     image = image.astype(image.dtype.newbyteorder('='))  # Converts to the native byte order
@@ -1012,18 +1091,37 @@ def extract_sources(image, image_flag, kwargs):
 
     # Calculate Kron radius
     kronrad, krflag = sep.kron_radius(data_sub, x, y, a, b, theta, radius_factor)
-    
-    # Calculate flux using elliptical aperture
-    flux, fluxerr, phot_flag = sep.sum_ellipse(data_sub, x, y, a, b, theta,
-                                               PHOT_AUTOPARAMS*kronrad, subpix=1, err=rms_map)
-    phot_flag |= krflag
 
-    # Use circular aperture if Kron radius is small
-    use_circle = kronrad * np.sqrt(a * b) < r_min
-    cflux, cfluxerr, cflag = sep.sum_circle(data_sub, x[use_circle], y[use_circle], r_min, subpix=1, err=rms_map)
-    flux[use_circle] = cflux
-    fluxerr[use_circle] = cfluxerr
-    phot_flag[use_circle] = cflag
+    # Objects needing circular aperture: degenerate ellipse params, invalid/zero Kron
+    # radius, or Kron aperture smaller than r_min.  Evaluated before sum_ellipse so
+    # the ellipse call never receives an invalid (zero or NaN) aperture scale factor.
+    use_circle = (
+        ~np.isfinite(kronrad) | (kronrad <= 0) |
+        ~np.isfinite(a) | (a <= 0) |
+        ~np.isfinite(b) | (b <= 0) |
+        (kronrad * np.sqrt(np.abs(a * b)) < r_min)
+    )
+    valid_ellipse = ~use_circle
+
+    flux = np.zeros(len(x))
+    fluxerr = np.zeros(len(x))
+    phot_flag = krflag.copy()
+
+    if valid_ellipse.any():
+        eflux, efluxerr, eflag = sep.sum_ellipse(
+            data_sub, x[valid_ellipse], y[valid_ellipse],
+            a[valid_ellipse], b[valid_ellipse], theta[valid_ellipse],
+            PHOT_AUTOPARAMS * kronrad[valid_ellipse], subpix=1, err=rms_map)
+        flux[valid_ellipse] = eflux
+        fluxerr[valid_ellipse] = efluxerr
+        phot_flag[valid_ellipse] |= eflag
+
+    if use_circle.any():
+        cflux, cfluxerr, cflag = sep.sum_circle(
+            data_sub, x[use_circle], y[use_circle], r_min, subpix=1, err=rms_map)
+        flux[use_circle] = cflux
+        fluxerr[use_circle] = cfluxerr
+        phot_flag[use_circle] = cflag
 
     # Compute flux radius
     r, rflag = sep.flux_radius(data_sub, x, y, radius_factor * a, PHOT_FLUXFRAC, normflux=flux, subpix=flux_radius_subpix)
@@ -1043,7 +1141,9 @@ def extract_sources(image, image_flag, kwargs):
         'sep_flag': phot_flag
     })
 
-    merged_df = pd.merge(objects, results, on="index").drop(columns=['index'])
+    # Keep aperture-photometry outputs under canonical names even when SEP's
+    # object table already includes overlapping columns such as "flux".
+    merged_df = pd.merge(objects, results, on="index", suffixes=("_sep", "")).drop(columns=['index'])
     merged_df['is_galaxy'] = (merged_df['a'] / merged_df['b'] >= elongation_fraction).astype(int)
     return merged_df, mask
 
@@ -1176,7 +1276,8 @@ def compare_images(image_org, noisy_image, image_reconstructed, image_id, exp_ti
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    filepath = os.path.join(output_dir, f'{image_id}_{round(exp_time)}_{round(new_exp_time)}.png')
+    filepath = os.path.join(output_dir,
+                             f'{os.path.basename(image_id).split(".")[0]}_{round(exp_time)}_{round(new_exp_time)}.png')
     # Pre-initialise optional variables so they are always bound after the try block.
     org_df = rec_df = noisy_df = pd.DataFrame()
     org_a = org_b = org_theta = np.array([])
@@ -1184,7 +1285,7 @@ def compare_images(image_org, noisy_image, image_reconstructed, image_id, exp_ti
 
     # Detect sources in original and reconstructed images
     try:
-        if kwargs['func'] == wrap_extract_sources:
+        if getattr(kwargs['func'], '__name__', '') == 'wrap_extract_sources':
             x_org, y_org, flux_org, flux_error_org, org_mask, org_a, org_b, org_theta, org_df = kwargs['func'](image_org, 'original', kwargs)
             x_rec, y_rec, flux_rec, flux_error_rec, rec_mask, rec_a, rec_b, rec_theta, rec_df = kwargs['func'](image_reconstructed, 'reconstructed', kwargs)
             x_noisy, y_noisy, flux_noisy, flux_error_noisy, noisy_mask, noisy_a, noisy_b, noisy_theta, noisy_df = kwargs['func'](noisy_image, 'noisy', kwargs)
@@ -1209,7 +1310,7 @@ def compare_images(image_org, noisy_image, image_reconstructed, image_id, exp_ti
     x_noisy_clean = x_noisy[valid_noisy]
     y_noisy_clean = y_noisy[valid_noisy]
 
-    if kwargs['func'] == wrap_extract_sources:
+    if getattr(kwargs['func'], '__name__', '') == 'wrap_extract_sources':
         org_df = org_df[valid_org].reset_index(drop=True)
         rec_df = rec_df[valid_rec].reset_index(drop=True)
         noisy_df = noisy_df[valid_noisy].reset_index(drop=True)
@@ -1272,7 +1373,7 @@ def compare_images(image_org, noisy_image, image_reconstructed, image_id, exp_ti
     flux_org = flux_org[matched_indices_image_org][org_error_mask]  
     flux_error_org = flux_error_org[matched_indices_image_org][org_error_mask]
 
-    if kwargs['func'] == wrap_extract_sources:
+    if getattr(kwargs['func'], '__name__', '') == 'wrap_extract_sources':
         # org_df/rec_df were already filtered to valid_org/valid_rec rows; map back
         org_df = org_df.iloc[matched_clean_org].reset_index(drop=True)
         rec_df = rec_df.iloc[matched_clean_rec].reset_index(drop=True)
@@ -1318,7 +1419,7 @@ def compare_images(image_org, noisy_image, image_reconstructed, image_id, exp_ti
     # Plot source comparison and save the image
     try:
         if if_selected:
-            if kwargs['func'] == wrap_extract_sources:
+            if getattr(kwargs['func'], '__name__', '') == 'wrap_extract_sources':
                 plot_source_comparison_sep(image_org, noisy_image, image_reconstructed, 
                                 x_org, y_org, x_rec, y_rec, 
                                 matched_indices_image_org, unmatched_indices_image_org, 
@@ -1368,7 +1469,7 @@ def decide_scale(model_dir):
     else:
         return None
 
-def find_best_performing_models(models_dir, condition, filter_model, model_prototype, n, index, concurrent_workers):
+def find_best_performing_models(models_dir, condition, filter_model, model_prototype, modulo=None, index=0, concurrent_workers=1, condition_kwargs=None):
     """Walk model folders, parse template tags, and select checkpoints.
 
     Parameters
@@ -1376,28 +1477,27 @@ def find_best_performing_models(models_dir, condition, filter_model, model_proto
     models_dir : str
         Root directory containing hierarchical model directories.
     condition : callable
-        Predicate used to keep/discard a discovered model directory.
-        Preferred signature is ``condition(model_info: dict) -> bool`` where
-        ``model_info`` contains keys parsed from the directory template:
-        ``is_gan``, ``use_attention``, ``loss_function``, ``data_alias_enriched_hex``,
-        ``scaling_tag``, ``dropout_tag``, ``activation_tag``,
+        Predicate ``condition(model_info: pd.DataFrame, condition_kwargs: dict) -> pd.Series``
+        used to filter discovered model rows. ``model_info`` columns are the
+        template keys: ``data_alias_enriched_hex``, ``is_gan``, ``use_attention``,
+        ``loss_function``, ``scaling_tag``, ``dropout_tag``, ``activation_tag``,
         ``output_activation_tag``, ``discriminator_activation_tag``,
-        ``discriminator_output_activation_tag``, plus ``model_dir`` and
-        ``checkpoints_dir``.
-        Backward-compatible signature ``condition(model_dir: str)`` is also
-        supported.
+        ``discriminator_output_activation_tag``, ``model_dir``, ``checkpoints_dir``.
     filter_model : callable
         Function that filters/selects checkpoint files from one checkpoints
         directory.
     model_prototype : str
         Glob pattern (relative to each model sub-directory) used to discover
         checkpoint files, e.g. ``'*.keras'``.
-    n : int
-        Maximum number of checkpoints to select per model.
+    modulo : int, optional
+        Checkpoint modulo used by ``filter_model`` (for
+        :func:`get_model_by_modulo`, keeps epochs divisible by this value).
     index : int
         Index used to select a specific model after shuffling.
     concurrent_workers : int
         Number of concurrent workers used for model selection.
+    condition_kwargs : dict, optional
+        Extra keyword dictionary passed to ``condition`` when supported.
 
     Returns
     -------
@@ -1405,11 +1505,14 @@ def find_best_performing_models(models_dir, condition, filter_model, model_proto
         Mapping from model directory (relative to models root) to selected
         checkpoint file paths.
     """
+    if modulo is None:
+        modulo = 1
+
     template_keys = [
+        'data_alias_enriched_hex',
         'is_gan',
         'use_attention',
         'loss_function',
-        'data_alias_enriched_hex',
         'scaling_tag',
         'dropout_tag',
         'activation_tag',
@@ -1429,19 +1532,6 @@ def find_best_performing_models(models_dir, condition, filter_model, model_proto
             except ValueError:
                 continue
         return None
-
-    def _apply_filter_model(file_list):
-        """Apply filter_model with backward-compatible call signatures."""
-        try:
-            return filter_model(file_list, model_prototype, n)
-        except TypeError:
-            try:
-                return filter_model(file_list, n)
-            except TypeError:
-                try:
-                    return filter_model(file_list, model_prototype)
-                except TypeError:
-                    return filter_model(file_list)
 
     # Use ./models as search root, even if a deeper path was passed.
     search_root = os.path.abspath(models_dir)
@@ -1474,7 +1564,7 @@ def find_best_performing_models(models_dir, condition, filter_model, model_proto
             for checkpoint_file in checkpoint_files
         }
 
-        selected_models = _apply_filter_model(checkpoint_files)
+        selected_models = filter_model(checkpoint_files, model_prototype, modulo)
         selected_models = [model_file for model_file in selected_models if model_file in epochs_by_file]
         if not selected_models:
             continue
@@ -1486,10 +1576,13 @@ def find_best_performing_models(models_dir, condition, filter_model, model_proto
         rows = []
         for checkpoint_file in selected_models:
             row = dict(base_info)
+            temp_dict = _decode_models_dir(os.path.dirname(os.path.dirname(checkpoint_file)))
             row['filepath'] = checkpoint_file
             basename = os.path.basename(checkpoint_file)
             row['prefix'] = 'best_model' if basename.startswith('best_model') else 'model'
             row['epoch'] = epochs_by_file[checkpoint_file]
+            row['model_alias_hex'] = temp_dict['model_alias_hex']
+            row['data_alias_enriched_hex'] = temp_dict['data_alias_enriched_hex']
             rows.append(row)
 
         model_info = pd.DataFrame(rows)
@@ -1499,21 +1592,13 @@ def find_best_performing_models(models_dir, condition, filter_model, model_proto
             ['_prefix_order', 'epoch'], ascending=[True, False]
         ).drop(columns=['_prefix_order']).reset_index(drop=True)
 
-        try:
-            mask = condition(model_info)
-            filtered_info = model_info.loc[mask]
-        except Exception:
-            try:
-                include_model = bool(condition(rel_model_dir))
-                filtered_info = model_info if include_model else pd.DataFrame()
-            except Exception:
-                filtered_info = model_info
+        mask = condition(model_info, condition_kwargs)
+        filtered_info = model_info.loc[mask]
 
         if filtered_info.empty:
             continue
 
-        selected_models = filtered_info['filepath'].tolist()
-        discovered_models[rel_model_dir] = selected_models
+        discovered_models[rel_model_dir] = filtered_info
     discovered_model_keys = list(discovered_models.keys())
     random.seed(42)  # Set a fixed seed for reproducibility
     random.shuffle(discovered_model_keys)
@@ -1524,6 +1609,166 @@ def find_best_performing_models(models_dir, condition, filter_model, model_proto
     discovered_models = {key: discovered_models[key] for key in discovered_model_keys[start_index:end_index]}
     logging.info('find_best_performing_models: selected %d model directories', len(discovered_models))
     return discovered_models
+
+def condition(model_info, kwargs):
+    """Default checkpoint filter — keeps all checkpoints.
+
+    Receives the full *model_info* DataFrame for one model directory and
+    returns an index or boolean mask used to select rows (checkpoints).
+    Each row carries:
+
+    ``is_gan``, ``use_attention``, ``loss_function``,
+    ``data_alias_enriched_hex``, ``scaling_tag``, ``dropout_tag``,
+    ``activation_tag``, ``output_activation_tag``,
+    ``discriminator_activation_tag``, ``discriminator_output_activation_tag``,
+    ``model_dir``, ``checkpoints_dir``, ``filepath``, ``prefix``, ``epoch``.
+
+    Rows are pre-sorted: ``best_model`` prefix first, then descending epoch.
+
+    The fallback signature ``condition(model_dir: str) -> bool`` is also
+    supported for backward compatibility (keep/drop the whole directory).
+
+    Parameters
+    ----------
+    model_info : pandas.DataFrame
+        One model directory's checkpoint DataFrame.
+    kwargs : dict
+        Additional keyword arguments.
+
+    Returns
+    -------
+    index-like
+        Any value accepted by ``DataFrame.loc[]``: a boolean Series, an
+        integer array/list of positional labels, or a slice.
+    """
+    data_alias_enriched_hex = kwargs['data_alias_enriched_hex']
+    if 'model_alias_hex' in kwargs and kwargs['model_alias_hex'] is not None and str(kwargs['model_alias_hex']).strip() != '':
+        mask = model_info['model_alias_hex'] == kwargs['model_alias_hex'] 
+        if 'epoch' in kwargs and kwargs['epoch'] is not None and str(kwargs['epoch']).strip() != '':
+            model_info['epoch'] = model_info['epoch'].astype(int, errors='coerce')
+            epoch_mask = mask & (model_info['epoch'] == kwargs['epoch'])
+            if epoch_mask.any():
+                return epoch_mask
+        else:
+            first_matches = np.flatnonzero(mask.to_numpy())
+            if first_matches.size:
+                first_only_mask = pd.Series(False, index=model_info.index)
+                first_only_mask.iloc[first_matches[0]] = True
+                return first_only_mask
+
+    return model_info['data_alias_enriched_hex'] == data_alias_enriched_hex
+
+def get_top_best_models(file_list, x):
+    """Select the *x* most recent checkpoints by epoch number.
+
+    Epoch numbers are parsed from the last underscore-separated numeric token
+    in each filename.  Files with non-parseable names are silently skipped.
+
+    Parameters
+    ----------
+    file_list : list of str
+        Candidate checkpoint file paths.
+    x : int
+        Number of top checkpoints to return.
+
+    Returns
+    -------
+    list of str
+        Up to *x* file paths sorted by descending epoch number.
+    """
+    if not isinstance(x, int) or x <= 0:
+        return []
+
+    valid_files = []
+    for f in file_list:
+        try:
+            base = os.path.basename(f)
+            num_part = base.split('_')[-1].split('.')[0]
+            num = int(num_part)
+            valid_files.append((f, num))
+        except (ValueError, IndexError):
+            continue  # Skip malformed filenames
+
+    valid_files.sort(key=lambda item: item[1], reverse=True)
+
+    # Extract filenames
+    top_files = [f[0] for f in valid_files[:x]]
+
+    # Optional: Warn if fewer than x valid files are found
+    if len(top_files) < x:
+        logging.warning('get_top_best_models: only %d valid files found, requested %d', len(top_files), x)
+    return top_files
+
+def get_model_by_modulo(file_list, prototype, modulo=75):
+    """Select checkpoints ordered by prefix priority with modulo applied only to normal models.
+
+    Priority order in the returned list:
+    1. ``best_model_*``  — all, descending epoch
+    2. ``final_model_*`` — all, descending epoch
+    3. ``model_*``       — modulo-filtered epochs + last epoch, descending epoch
+
+    Modulo filtering applies only to normal (``model_*``) checkpoints.
+
+    Parameters
+    ----------
+    file_list : list of str
+        Candidate checkpoint file paths.
+    prototype : str
+        Unused glob prototype (kept for API compatibility with
+        :func:`find_best_performing_models`).
+    modulo : int, optional
+        Epoch interval applied to normal model checkpoints. Default is 75.
+
+    Returns
+    -------
+    list of str
+        Selected checkpoint file paths in priority order.
+    """
+    def _parse_epoch(filepath):
+        base = os.path.basename(filepath).split('.')[0]
+        for part in reversed(base.split('_')):
+            try:
+                return int(part)
+            except ValueError:
+                continue
+        return -1
+
+    best_models = {}
+    final_models = {}
+    normal_models = {}
+
+    for file in file_list:
+        base = os.path.basename(file).split('.')[0]
+        epoch = _parse_epoch(file)
+        if base.startswith('best_model'):
+            best_models[epoch] = file
+        elif base.startswith('final_model') or 'final' in base:
+            final_models[epoch] = file
+        else:
+            normal_models[epoch] = file
+
+    selected = []
+
+    # 1) best_model — all, descending epoch
+    for epoch in sorted(best_models, reverse=True):
+        selected.append(best_models[epoch])
+
+    # 2) final_model — all, descending epoch
+    for epoch in sorted(final_models, reverse=True):
+        selected.append(final_models[epoch])
+
+    # 3) normal model — modulo-filtered + last epoch, descending epoch
+    normal_sorted = sorted(normal_models.items())
+    kept_normal = {}
+    for index, (epoch, file) in enumerate(normal_sorted):
+        if epoch % modulo == 0:
+            kept_normal[epoch] = file
+        elif index == len(normal_sorted) - 1:
+            kept_normal[epoch] = file
+    for epoch in sorted(kept_normal, reverse=True):
+        selected.append(kept_normal[epoch])
+
+    return selected
 
 def get_test_images(images, kwargs_data, scaling):
     """Build the test-image DataFrame by running the data augmentation pipeline.
@@ -1550,7 +1795,45 @@ def get_test_images(images, kwargs_data, scaling):
         exposure-time column.
     """
     kwargs_data['test'] = True
-    return data_augment_pluggable(images, kwargs_data, scaling)
+    test_images = data_augment_pluggable(images, kwargs_data, scaling)
+
+    if isinstance(test_images, pd.DataFrame):
+        return test_images
+
+    if hasattr(test_images, '__iter__') and not isinstance(test_images, (str, bytes)):
+        metadata_rows = []
+        for item in test_images:
+            if isinstance(item, pd.Series):
+                metadata_rows.append(item.to_dict())
+                continue
+            if isinstance(item, dict):
+                metadata_rows.append(dict(item))
+                continue
+            if isinstance(item, (tuple, list)):
+                for part in item:
+                    if isinstance(part, pd.Series):
+                        metadata_rows.append(part.to_dict())
+                        break
+                    if isinstance(part, dict):
+                        metadata_rows.append(dict(part))
+                        break
+
+        if metadata_rows:
+            return pd.DataFrame(metadata_rows)
+
+    # data_augment_pluggable is a generator in training mode. Metrics requires
+    # metadata rows as a DataFrame so process-pool jobs remain picklable.
+    if kwargs_data.get('cache_raw_metadata'):
+        cache_path = kwargs_data.get('test_cache_filepath')
+        if isinstance(cache_path, str) and cache_path and os.path.exists(cache_path):
+            return pd.read_csv(cache_path)
+
+    raise TypeError(
+        'get_test_images expected a pandas.DataFrame of metadata. '
+        f'Got {type(test_images).__name__}. '
+        'If data_augment_pluggable returns a generator, ensure it yields metadata rows '
+        'or enable cache_raw_metadata with a valid existing test_cache_filepath.'
+    )
 
 def _reconstruct_patch(noisy_patch, scales, model, use_mosaic, patch_size, stride, weighting, batch_size, gaussian_sigma=64):
     """Reconstruct a single patch using mosaic sliding-window or direct model inference.
@@ -1599,7 +1882,7 @@ def _reconstruct_patch(noisy_patch, scales, model, use_mosaic, patch_size, strid
                     if out is not None:
                         reconstructed_image = descale(out[:, :, 0], *func_args)
                 else:
-                    out = model.predict(np.array([np.expand_dims(scaled_image, axis=-1)]))
+                    out = model.predict(np.array([np.expand_dims(scaled_image, axis=-1)]), verbose=0)
                     reconstructed_image = descale(out[0, :, :, 0], *func_args)
             except Exception as err:
                 logging.warning('_reconstruct_patch: error during reconstruction: %s', err)
@@ -1616,7 +1899,7 @@ def _reconstruct_patch(noisy_patch, scales, model, use_mosaic, patch_size, strid
                 if out is not None:
                     reconstructed_image = out[:, :, 0]
             else:
-                out = model.predict(np.array([np.expand_dims(noisy_patch, axis=-1)]))
+                out = model.predict(np.array([np.expand_dims(noisy_patch, axis=-1)]), verbose=0)
                 reconstructed_image = out[0, :, :, 0]
         except Exception as err:
             logging.warning('_reconstruct_patch: error during reconstruction: %s', err)
@@ -1716,9 +1999,122 @@ def _finalise_dfs(rec_dfs, org_dfs, noisy_dfs, epoch, model_dir, model_index):
         rec_df = pd.DataFrame()
     return org_df, noisy_df, rec_df
 
+def _crop_generator(test_images_df, location_col, exp_time_col, new_exp_time_col, sigma_key,
+                    type_of_image, noise_fn, scales, patch_size,
+                    nan_value, posinf_value, neginf_value, frac):
+    """Lazily yield one scaled crop at a time from all test images.
+
+    Each yielded item is a tuple:
+        (base, noisy, scaled, descale_fn, descale_args, image_id, org_name, org_exp_time, new_exp_time, if_selected)
+
+    Memory usage is O(1) crops at a time — nothing is accumulated.
+    """
+    for _, row in test_images_df.iterrows():
+        try:
+            image = open_fits(row[location_col], type_of_image=type_of_image)
+        except Exception as e:
+            logging.warning('_crop_generator: open_fits failed %s: %s', row[location_col], e)
+            continue
+        if not isinstance(image, np.ndarray):
+            continue
+
+        image    = np.nan_to_num(image, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+        org_name = os.path.basename(row[location_col]).rsplit('.', 1)[0]
+        org_et   = row[exp_time_col]
+        new_et   = row[new_exp_time_col]
+        sigma    = row[sigma_key]
+
+        for i, crop in enumerate(crop_image_generator(image, ps=patch_size[0])):
+            base  = np.nan_to_num(crop, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+            noisy = np.nan_to_num(noise_fn(base, row, sigma),
+                                  nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+            if scales is not None:
+                scale_fn, descale_fn = scales
+                try:
+                    args = scale_fn(noisy)
+                except Exception as e:
+                    logging.warning('_crop_generator: scale failed %s_%d: %s', org_name, i, e)
+                    continue
+                if args is None:
+                    continue
+                scaled       = np.expand_dims(args[0], -1)
+                descale_fn_  = descale_fn
+                descale_args = args[1:]
+            else:
+                scaled       = np.expand_dims(noisy, -1)
+                descale_fn_  = None
+                descale_args = ()
+
+            yield (base, noisy, scaled, descale_fn_, descale_args,
+                   f'{org_name}_{i}', org_name, org_et, new_et,
+                   np.random.rand() <= frac)
+
+
+def _crop_batch_producer(test_images_df, location_col, exp_time_col, new_exp_time_col, sigma_key,
+                          type_of_image, noise_fn, scales, patch_size,
+                          nan_value, posinf_value, neginf_value, frac, batch_size, out_queue):
+    """Yield batches of scaled crops onto *out_queue* from a background IO thread.
+
+    Reads FITS files one at a time, crops each image, scales each crop, and
+    accumulates crops into a list of *batch_size*.  Each full batch is put on
+    the queue immediately so the main thread can start predicting while IO
+    continues.  A ``None`` sentinel is always put last to signal completion.
+    """
+    batch = []
+    try:
+        for _, row in test_images_df.iterrows():
+            try:
+                image = open_fits(row[location_col], type_of_image=type_of_image)
+            except Exception as e:
+                logging.warning('_crop_batch_producer: open_fits failed %s: %s', row[location_col], e)
+                continue
+            if not isinstance(image, np.ndarray):
+                continue
+
+            image    = np.nan_to_num(image, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+            org_name = os.path.basename(row[location_col]).rsplit('.', 1)[0]
+            org_et   = row[exp_time_col]
+            new_et   = row[new_exp_time_col]
+            sigma    = row[sigma_key]
+
+            for i, crop in enumerate(crop_image_generator(image, ps=patch_size[0])):
+                base  = np.nan_to_num(crop, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+                noisy = np.nan_to_num(noise_fn(base, row, sigma),
+                                      nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+                if scales is not None:
+                    scale_fn, descale_fn = scales
+                    try:
+                        args = scale_fn(noisy)
+                    except Exception as e:
+                        logging.warning('_crop_batch_producer: scale failed %s_%d: %s', org_name, i, e)
+                        continue
+                    if args is None:
+                        continue
+                    scaled       = np.expand_dims(args[0], -1)
+                    descale_fn_  = descale_fn
+                    descale_args = args[1:]
+                else:
+                    scaled       = np.expand_dims(noisy, -1)
+                    descale_fn_  = None
+                    descale_args = ()
+
+                batch.append((base, noisy, scaled, descale_fn_, descale_args,
+                              f'{org_name}_{i}', org_name, org_et, new_et,
+                              np.random.rand() <= frac))
+
+                if len(batch) >= batch_size:
+                    out_queue.put(batch)
+                    batch = []
+
+        if batch:
+            out_queue.put(batch)
+    finally:
+        out_queue.put(None)  # sentinel — always sent, even on exception
+
+
 def process_single_model(model_file, model_dir, scales, test_images_df, kwargs_source,
                          patch_size=(256, 256, 1), stride=(128, 128, 1), weighting='gaussian', batch_size=16,
-                         frac=0.1, model_index=0, use_mosaic=True,
+                         frac=0.1, model_index=0, use_mosaic=True, use_io_thread=True,
                          gaussian_sigma=64,
                          type_of_image='SCI',
                          nan_value=0.0, posinf_value=0.0, neginf_value=0.0,
@@ -1726,7 +2122,8 @@ def process_single_model(model_file, model_dir, scales, test_images_df, kwargs_s
                          noise_fn=_simulated_image_from_exposure,
                          combined_images_dir='./metrics_updated/combined_images', png_dir='./metrics_updated/pngs',
                          org_dir='./metrics_updated/original_images', noisy_dir='./metrics_updated/noisy_images',
-                         rec_dir='./metrics_updated/reconstructed_images', model_alias_hex=''):
+                         rec_dir='./metrics_updated/reconstructed_images', model_alias_hex='', data_alias_enriched_hex='',
+                         save_images=True):
     """Evaluate one model checkpoint over all rows in *test_images_df*.
 
     Parameters
@@ -1790,6 +2187,9 @@ def process_single_model(model_file, model_dir, scales, test_images_df, kwargs_s
         ``(org_dfs, noisy_dfs, rec_dfs)`` — source catalogues as DataFrames.
     """
     epoch = os.path.basename(model_file).split('.')[0].split('_')[-1]
+    logging.info('process_single_model [START]: model_file=%s  epoch=%s  model_dir=%s  use_mosaic=%s  use_io_thread=%s  n_images=%d',
+                 model_file, epoch, model_dir, use_mosaic, use_io_thread, len(test_images_df))
+
     required_columns = [location_col, exp_time_col, new_exp_time_col, sigma_key]
     if not all(col in test_images_df.columns for col in required_columns):
         logging.warning('process_single_model: DataFrame missing required columns: %s', required_columns)
@@ -1803,12 +2203,19 @@ def process_single_model(model_file, model_dir, scales, test_images_df, kwargs_s
     except Exception as err:
         logging.error('process_single_model: failed to load model %s: %s', model_file, err)
         return
+    logging.info('process_single_model: model loaded successfully: %s', model_file)
 
-    combined_images_dir = combined_images_dir.replace('*', model_alias_hex)
-    png_dir = png_dir.replace('*', model_alias_hex)
-    org_dir = org_dir.replace('*', model_alias_hex)
-    noisy_dir = noisy_dir.replace('*', model_alias_hex)
-    rec_dir = rec_dir.replace('*', model_alias_hex)
+    try:
+        combined_images_dir = combined_images_dir.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex).replace('&', epoch)
+        png_dir = png_dir.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex).replace('&', epoch)
+        org_dir = org_dir.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex).replace('&', epoch)
+        noisy_dir = noisy_dir.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex).replace('&', epoch)
+        rec_dir = rec_dir.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex).replace('&', epoch)
+    except Exception as err:
+        logging.error('process_single_model: failed to resolve output directory paths: %s', err)
+        return
+    logging.debug('process_single_model: output dirs resolved — combined=%s  png=%s  org=%s  noisy=%s  rec=%s',
+                  combined_images_dir, png_dir, org_dir, noisy_dir, rec_dir)
 
     metrics = []
     aggregated_metrics = []
@@ -1816,103 +2223,202 @@ def process_single_model(model_file, model_dir, scales, test_images_df, kwargs_s
     all_flux_error_rec, all_flux_error_org = [], []
     org_dfs, noisy_dfs, rec_dfs = [], [], []
 
-    for _, row in test_images_df.iterrows():
-        image_filepath = row[location_col]
-        org_exp_time = row[exp_time_col]
-        new_exp_time = row[new_exp_time_col]
-        new_sigma = row[sigma_key]
-
+    combined_image_dir = os.path.join(combined_images_dir, str(epoch))
+    for d in [combined_image_dir, png_dir, org_dir, noisy_dir, rec_dir]:
         try:
-            image = open_fits(image_filepath, type_of_image=type_of_image)
+            ensure_directory_exists(d)
         except Exception as e:
-            logging.warning('process_single_model: error reading image %s: %s', image_filepath, e)
-            continue
-        if image is None:
-            continue
-        if not isinstance(image, np.ndarray):
-            logging.warning('process_single_model: open_fits returned unexpected type %s for %s', type(image), image_filepath)
-            continue
+            logging.warning('process_single_model: error creating output directories: %s', e)
 
-        image = np.nan_to_num(image, nan=nan_value, 
-                              posinf=posinf_value, 
-                              neginf=neginf_value)
-        org_name = os.path.basename(image_filepath).rsplit('.', 1)[0]
-
-        # Mosaic mode: whole image at once; no-mosaic mode: iterate over crops
-        patches = [(image, org_name, 0)] if use_mosaic else [
-            (np.nan_to_num(crop, nan=nan_value, 
-                           posinf=posinf_value, 
-                           neginf=neginf_value), f'{org_name}_{i}', i)
-            for i, crop in enumerate(crop_image_generator(image, ps=patch_size[0]))
-        ]
-
-        for base_image, image_id, crop_idx in patches:
-            if_selected = np.random.rand() <= frac
-            noisy_image = noise_fn(base_image, row, new_sigma)
-            noisy_image = np.nan_to_num(noisy_image, nan=nan_value, 
-                                        posinf=posinf_value, 
-                                        neginf=neginf_value)
-
-            reconstructed_image = _reconstruct_patch(
-                noisy_image, scales, model, use_mosaic,
-                patch_size, stride, weighting, batch_size,
-                gaussian_sigma,
-            )
-            if reconstructed_image is None:
-                logging.warning('process_single_model: reconstruction failed for %s, skipping', image_id)
-                continue
-            reconstructed_image = np.nan_to_num(reconstructed_image, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
-
-            # Create output directories
-            combined_image_dir = os.path.join(combined_images_dir, str(epoch))
+    if use_mosaic:
+        # ── Mosaic pipeline ──────────────────────────────────────────────────
+        # Reconstruct each full image via sliding-window inference, then save
+        # and compare immediately.
+        for _, row in test_images_df.iterrows():
             try:
-                for folder in [combined_image_dir, png_dir, org_dir, noisy_dir, rec_dir]:
-                    ensure_directory_exists(folder)
+                image = open_fits(row[location_col], type_of_image=type_of_image)
             except Exception as e:
-                logging.warning('process_single_model: error creating output directories: %s', e)
+                logging.warning('process_single_model: open_fits failed %s: %s', row[location_col], e)
+                continue
+            if not isinstance(image, np.ndarray):
                 continue
 
-            # Save FITS and PNG images
-            for index, (img, suffix) in enumerate([(base_image, "_org"),
-                                                    (reconstructed_image, "_rec"),
-                                                    (noisy_image, "_noisy")]):
-                try:
-                    if index == 0:
-                        filename = f"{org_name}{suffix}_{round(org_exp_time)}.fits"
-                        if if_selected:
-                            save_fits(img, filename, org_dir, type_of_image=type_of_image)
-                    elif index == 1:
-                        filename = f"{org_name}{suffix}_{epoch}_{round(org_exp_time)}_{round(new_exp_time)}.fits"
-                        if if_selected:
-                            save_fits(img, filename, rec_dir, type_of_image=type_of_image)
-                    else:
-                        filename = f"{org_name}{suffix}_{round(org_exp_time)}_{round(new_exp_time)}.fits"
-                        if if_selected:
-                            save_fits(img, filename, noisy_dir, type_of_image=type_of_image)
-                    try:
-                        scaled_img, vmin, vmax = scale_image(img)
-                        scaled_img.save(os.path.join(png_dir, f"{filename.split('.')[0]}.png"))
-                    except Exception as e:
-                        logging.warning('process_single_model: error scaling/saving PNG for %s%s: %s', org_name, suffix, e)
-                except Exception as e:
-                    logging.warning('process_single_model: error saving images for %s%s: %s', org_name, suffix, e)
-                    continue
+            image    = np.nan_to_num(image, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+            org_name = os.path.basename(row[location_col]).rsplit('.', 1)[0]
+            org_et   = row[exp_time_col]
+            new_et   = row[new_exp_time_col]
+            sigma    = row[sigma_key]
+            logging.debug('process_single_model [mosaic]: processing %s (org_et=%.1f)', org_name, org_et)
 
-            results = compare_images(base_image, noisy_image, reconstructed_image, image_id,
-                                     float(org_exp_time), float(new_exp_time),
-                                     combined_image_dir, kwargs_source, if_selected)
+            try:
+                noisy = np.nan_to_num(noise_fn(image, row, sigma),
+                                      nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+            except Exception as e:
+                logging.warning('process_single_model [mosaic]: noise_fn failed for %s: %s', org_name, e)
+                continue
+            rec   = _reconstruct_patch(noisy, scales, model, use_mosaic,
+                                       patch_size, stride, weighting, batch_size, gaussian_sigma)
+            if rec is None:
+                logging.warning('process_single_model: reconstruction failed for %s, skipping', org_name)
+                continue
+            rec    = np.nan_to_num(rec, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+            if_sel = np.random.rand() <= frac
+
+            for img, fname, dst in [
+                (image, f'{org_name}_org_{round(org_et)}.fits',                               org_dir),
+                (rec,   f'{org_name}_rec_{epoch}_{round(org_et)}_{round(new_et)}.fits',       rec_dir),
+                (noisy, f'{org_name}_noisy_{round(org_et)}_{round(new_et)}.fits',             noisy_dir),
+            ]:
+                if if_sel and save_images:
+                    try:
+                        save_fits(img, fname, dst, type_of_image=type_of_image)
+                    except Exception as e:
+                        logging.warning('process_single_model: save_fits %s: %s', fname, e)
+                try:
+                    scaled_img, _, _ = scale_image(img)
+                    if not hasattr(scaled_img, 'save'):
+                        logging.debug('process_single_model [mosaic]: scale_image returned non-PIL for %s, skipping PNG', fname)
+                    else:
+                        scaled_img.save(os.path.join(png_dir, fname.replace('.fits', '.png')))
+                except Exception as e:
+                    logging.warning('process_single_model: save PNG %s: %s', fname, e)
+
+            try:
+                results = compare_images(image, noisy, rec, org_name,
+                                         float(org_et), float(new_et),
+                                         combined_image_dir, kwargs_source, if_sel)
+            except Exception as e:
+                logging.warning('process_single_model [mosaic]: compare_images failed for %s: %s', org_name, e)
+                continue
             if results is not None:
-                _collect_results(results,
-                                 all_flux_rec, all_flux_org, all_flux_error_rec, all_flux_error_org,
-                                 metrics, org_dfs, noisy_dfs, rec_dfs, model_index)
+                try:
+                    _collect_results(results, all_flux_rec, all_flux_org,
+                                     all_flux_error_rec, all_flux_error_org,
+                                     metrics, org_dfs, noisy_dfs, rec_dfs, model_index)
+                except Exception as e:
+                    logging.warning('process_single_model [mosaic]: _collect_results failed for %s: %s', org_name, e)
+
+    else:
+        # ── No-mosaic pipeline ───────────────────────────────────────────────
+        # Two sub-modes controlled by use_io_thread (config: use_io_thread):
+        #   True  — background IO thread fills a bounded queue; main thread
+        #           predicts+saves as batches arrive (low memory, overlapped IO).
+        #   False — lazy generator yields one crop at a time; main thread
+        #           accumulates batch_size crops then predicts+saves immediately
+        #           (single-threaded, O(batch_size) memory).
+        if use_io_thread:
+            crop_queue = queue.Queue(maxsize=4)
+            io_thread  = threading.Thread(
+                target=_crop_batch_producer,
+                args=(test_images_df, location_col, exp_time_col, new_exp_time_col, sigma_key,
+                      type_of_image, noise_fn, scales, patch_size,
+                      nan_value, posinf_value, neginf_value, frac, batch_size, crop_queue),
+                daemon=True,
+            )
+            try:
+                io_thread.start()
+            except Exception as e:
+                logging.error('process_single_model [no-mosaic]: failed to start IO thread: %s', e)
+                return
+            logging.info('process_single_model [no-mosaic]: IO thread started (maxsize=4, batch_size=%d)', batch_size)
+            crop_source = iter(lambda: crop_queue.get(), None)  # yields batches until sentinel
+        else:
+            # Wrap the generator so the predict loop below is identical for both paths.
+            def _batched(gen, n):
+                batch = []
+                for item in gen:
+                    batch.append(item)
+                    if len(batch) >= n:
+                        yield batch
+                        batch = []
+                if batch:
+                    yield batch
+            crop_source = _batched(
+                _crop_generator(test_images_df, location_col, exp_time_col, new_exp_time_col, sigma_key,
+                                type_of_image, noise_fn, scales, patch_size,
+                                nan_value, posinf_value, neginf_value, frac),
+                batch_size,
+            )
+
+        batch_count = 0
+        for batch in crop_source:
+            logging.debug('process_single_model [no-mosaic]: batch %d — %d crops', batch_count, len(batch))
+            try:
+                preds = model.predict(np.stack([p[2] for p in batch]), verbose=0)
+            except Exception as e:
+                logging.warning('process_single_model [no-mosaic]: predict failed on batch %d: %s', batch_count, e)
+                batch_count += 1
+                continue
+            batch_count += 1
+            for k, (base, noisy, _, descale_fn, descale_args, image_id, org_name, org_et, new_et, if_sel) in enumerate(batch):
+                rec = preds[k, :, :, 0]
+                if descale_fn is not None:
+                    try:
+                        rec = descale_fn(rec, *descale_args)
+                    except Exception as e:
+                        logging.warning('process_single_model: descale failed: %s', e)
+                        continue
+                rec = np.nan_to_num(rec, nan=nan_value, posinf=posinf_value, neginf=neginf_value)
+
+                for img, fname, dst in [
+                    (base,  f'{org_name}_org_{round(org_et)}.fits',                               org_dir),
+                    (rec,   f'{org_name}_rec_{epoch}_{round(org_et)}_{round(new_et)}.fits',       rec_dir),
+                    (noisy, f'{org_name}_noisy_{round(org_et)}_{round(new_et)}.fits',             noisy_dir),
+                ]:
+                    if if_sel and save_images:
+                        try:
+                            save_fits(img, fname, dst, type_of_image=type_of_image)
+                        except Exception as e:
+                            logging.warning('process_single_model: save_fits %s: %s', fname, e)
+                    try:
+                        scaled_img, _, _ = scale_image(img)
+                        if not hasattr(scaled_img, 'save'):
+                            logging.debug('process_single_model [no-mosaic]: scale_image returned non-PIL for %s, skipping PNG', fname)
+                        else:
+                            scaled_img.save(os.path.join(png_dir, fname.replace('.fits', '.png')))
+                    except Exception as e:
+                        logging.warning('process_single_model: save PNG %s: %s', fname, e)
+
+                try:
+                    results = compare_images(base, noisy, rec, image_id,
+                                             float(org_et), float(new_et),
+                                             combined_image_dir, kwargs_source, if_sel)
+                except Exception as e:
+                    logging.warning('process_single_model [no-mosaic]: compare_images failed for %s: %s', image_id, e)
+                    continue
+                if results is not None:
+                    try:
+                        _collect_results(results, all_flux_rec, all_flux_org,
+                                         all_flux_error_rec, all_flux_error_org,
+                                         metrics, org_dfs, noisy_dfs, rec_dfs, model_index)
+                    except Exception as e:
+                        logging.warning('process_single_model [no-mosaic]: _collect_results failed for %s: %s', image_id, e)
+
+        logging.info('process_single_model [no-mosaic]: finished — %d batches processed', batch_count)
+        if use_io_thread:
+            try:
+                io_thread.join(timeout=300)
+                if io_thread.is_alive():
+                    logging.warning('process_single_model [no-mosaic]: IO thread still alive after 300s join timeout')
+                else:
+                    logging.info('process_single_model [no-mosaic]: IO thread joined cleanly')
+            except Exception as e:
+                logging.warning('process_single_model [no-mosaic]: io_thread.join failed: %s', e)
 
     metrics = pd.DataFrame(metrics)
+    metrics['epoch'] = epoch
+    metrics['model'] = model_dir
+    
     all_flux_rec = np.array(all_flux_rec)
     all_flux_org = np.array(all_flux_org)
     all_flux_error_rec = np.array(all_flux_error_rec)
     all_flux_error_org = np.array(all_flux_error_org)
 
-    org_dfs, noisy_dfs, rec_dfs = _finalise_dfs(rec_dfs, org_dfs, noisy_dfs, epoch, model_dir, model_index)
+    try:
+        org_dfs, noisy_dfs, rec_dfs = _finalise_dfs(rec_dfs, org_dfs, noisy_dfs, epoch, model_dir, model_index)
+    except Exception as err:
+        logging.warning('process_single_model: _finalise_dfs failed: %s', err)
+        org_dfs, noisy_dfs, rec_dfs = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     try:
         aggregated_stats = aggregate_df(metrics, all_flux_rec, all_flux_org, all_flux_error_rec, all_flux_error_org)
@@ -1922,12 +2428,15 @@ def process_single_model(model_file, model_dir, scales, test_images_df, kwargs_s
             aggregated_metrics.append(aggregated_stats)
     except Exception as err:
         logging.warning('process_single_model: aggregate_df failed: %s', err)
+    n_rec = len(rec_dfs) if isinstance(rec_dfs, pd.DataFrame) and not rec_dfs.empty else 0
+    logging.info('process_single_model [END]: epoch=%s  model_dir=%s  n_metrics=%d  n_rec_sources=%d',
+                 epoch, model_dir, len(metrics), n_rec)
     return metrics, pd.DataFrame(aggregated_metrics), (org_dfs, noisy_dfs, rec_dfs)
 
 
 def process_models(job, kwargs_source,
                     workers=8, frac=0.1, parallel=True, patch_size=(256, 256, 1), stride=(128, 128, 1),
-                    weighting='gaussian', batch_size=16, use_mosaic=True,
+                    weighting='gaussian', batch_size=16, use_mosaic=True, use_io_thread=True,
                     gaussian_sigma=64,
                     type_of_image='SCI',
                     nan_value=0.0, posinf_value=0.0, neginf_value=0.0,
@@ -1936,6 +2445,8 @@ def process_models(job, kwargs_source,
                     combined_images_dir='./metrics_updated/combined_images', png_dir='./metrics_updated/pngs',
                     org_dir='./metrics_updated/original_images', noisy_dir='./metrics_updated/noisy_images',
                     rec_dir='./metrics_updated/reconstructed_images',
+                    save_images=True,
+                    overwrite=True,
                     all_metrics_csv=None, aggregated_metrics_csv=None,
                     org_catalog_csv=None, noisy_catalog_csv=None, rec_catalog_csv=None):
     """Evaluate all checkpoints from a single model directory.
@@ -1992,10 +2503,10 @@ def process_models(job, kwargs_source,
         ``(org_dfs, noisy_dfs, rec_dfs)`` — concatenated source catalogues.
     """
 
-    if job is None or len(job) != 5:
-        logging.warning('process_models: invalid job tuple (expected 5-element tuple, got %s)', job)
+    if job is None or len(job) != 6:
+        logging.warning('process_models: invalid job tuple (expected 6-element tuple, got %s)', job)
         return pd.DataFrame(), pd.DataFrame(), (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
-    model_dir, model_files, scales, test_images_df, model_tags = job
+    model_dir, model_files_df, scales, test_images_df, model_tags, data_alias_enriched_hex = job
     
     def _require_str_path(path_value, name):
         if not isinstance(path_value, str):
@@ -2008,11 +2519,17 @@ def process_models(job, kwargs_source,
     noisy_catalog_csv_s = _require_str_path(noisy_catalog_csv, 'noisy_catalog_csv')
     rec_catalog_csv_s = _require_str_path(rec_catalog_csv, 'rec_catalog_csv')
 
-    all_metrics_csv = all_metrics_csv_s.replace('*', model_tags['model_alias_hex'])
-    aggregated_metrics_csv = aggregated_metrics_csv_s.replace('*', model_tags['model_alias_hex'])
-    org_catalog_csv = org_catalog_csv_s.replace('*', model_tags['model_alias_hex'])
-    noisy_catalog_csv = noisy_catalog_csv_s.replace('*', model_tags['model_alias_hex'])
-    rec_catalog_csv = rec_catalog_csv_s.replace('*', model_tags['model_alias_hex'])
+    model_alias_hex = model_tags.get('model_alias_hex', 'config_model_alias_hex')
+
+    all_metrics_csv = all_metrics_csv_s.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex)
+    aggregated_metrics_csv = aggregated_metrics_csv_s.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex)
+    org_catalog_csv = org_catalog_csv_s.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex)
+    noisy_catalog_csv = noisy_catalog_csv_s.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex)
+    rec_catalog_csv = rec_catalog_csv_s.replace('*', model_alias_hex).replace('#', data_alias_enriched_hex)
+
+    if not overwrite and os.path.exists(all_metrics_csv):
+        logging.info('process_models: %s already exists and overwrite=False, skipping.', all_metrics_csv)
+        return pd.DataFrame(), pd.DataFrame(), (pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
 
     _acc_metrics: list = []
     _acc_aggregated: list = []
@@ -2038,7 +2555,7 @@ def process_models(job, kwargs_source,
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(process_single_model, model_file, model_dir, scales,
                                        test_images_df, kwargs_source, patch_size, stride,
-                                       weighting, batch_size, frac, index, use_mosaic,
+                                       weighting, batch_size, frac, index, use_mosaic, use_io_thread,
                                        gaussian_sigma,
                                        type_of_image,
                                        nan_value, posinf_value,
@@ -2046,8 +2563,9 @@ def process_models(job, kwargs_source,
                                        location_col, exp_time_col, new_exp_time_col, sigma_key,
                                        noise_fn,
                                        combined_images_dir, png_dir, org_dir, noisy_dir, rec_dir,
-                                       model_tags['model_alias_hex'])
-                       for index, model_file in enumerate(model_files)]
+                                       model_tags['model_alias_hex'], data_alias_enriched_hex,
+                                       save_images=save_images)
+                       for index, model_file in enumerate(model_files_df['filepath'].tolist())]
         for future in as_completed(futures):
             if future is not None:
                 try:
@@ -2055,10 +2573,10 @@ def process_models(job, kwargs_source,
                 except Exception as err:
                     logging.warning('process_models: error processing model future: %s', err)
     else:
-        for index, model_file in enumerate(model_files):
+        for index, model_file in enumerate(model_files_df['filepath'].tolist()):
             _collect_model_result(process_single_model(model_file, model_dir, scales, test_images_df,
                                                        kwargs_source, patch_size, stride,
-                                                       weighting, batch_size, frac, index, use_mosaic,
+                                                       weighting, batch_size, frac, index, use_mosaic, use_io_thread,
                                                        gaussian_sigma,
                                                        type_of_image,
                                                        nan_value, posinf_value,
@@ -2066,7 +2584,8 @@ def process_models(job, kwargs_source,
                                                        location_col, exp_time_col, new_exp_time_col, sigma_key,
                                                        noise_fn,
                                                        combined_images_dir, png_dir, org_dir, noisy_dir, rec_dir,
-                                                       model_tags['model_alias_hex']))
+                                                       model_tags['model_alias_hex'], data_alias_enriched_hex,
+                                                       save_images=save_images))
 
     if _acc_metrics:
         all_metrics = pd.concat(_acc_metrics, ignore_index=True)
@@ -2104,14 +2623,15 @@ def process_models(job, kwargs_source,
         rec_dfs.to_csv(rec_catalog_csv, index=False)
     return all_metrics, aggregated_metrics, (org_dfs, noisy_dfs, rec_dfs)
         
-def main(models_dir, data_kwargs, model_kwargs, kwargs_source, total_workers, max_workers, frac, condition, filter_model, n, model_prototype,
+def main(models_dir, data_kwargs, model_kwargs, kwargs_source, total_workers, max_workers, frac, condition, filter_model, modulo=None, model_prototype=None,
          all_metrics_csv='./metrics_updated/all_metrics_*.csv',
          aggregated_metrics_csv='./metrics_updated/aggregated_metrics_*.csv',
          org_catalog_csv='./metrics_updated/org_catalog_*.csv',
          noisy_catalog_csv='./metrics_updated/noisy_catalog_*.csv',
          rec_catalog_csv='./metrics_updated/rec_catalog_*.csv',
          parallel=True, parallel_epoch=False, scaling=None, 
-         index=0, concurrent_workers=1):
+         index=0, concurrent_workers=1, condition_kwargs=None, 
+         data_alias_enriched_hex=''):
     """Run the full evaluation pipeline across all qualifying model directories.
 
     Discovers models with :func:`find_best_performing_models`, evaluates each
@@ -2138,32 +2658,37 @@ def main(models_dir, data_kwargs, model_kwargs, kwargs_source, total_workers, ma
         ``condition(subdir_name) -> bool`` — filter for model sub-directories.
     filter_model : callable
         Checkpoint selection function (e.g. :func:`get_model_by_modulo`).
-    n : int
-        Maximum checkpoints per model directory.
+    modulo : int
+        Checkpoint modulo used by ``filter_model`` (for
+        :func:`get_model_by_modulo`, keeps epochs divisible by this value).
     model_prototype : str
         Glob pattern for checkpoint files.
-    all_metrics_csv : str, optional
+    all_metrics_csv : str
         Output path for the per-image metrics CSV.
-    aggregated_metrics_csv : str, optional
+    aggregated_metrics_csv : str
         Output path for the aggregated metrics CSV.
-    org_catalog_csv : str, optional
+    org_catalog_csv : str
         Output path for the original-source catalogue CSV.
-    noisy_catalog_csv : str, optional
+    noisy_catalog_csv : str
         Output path for the noisy-source catalogue CSV.
-    rec_catalog_csv : str, optional
+    rec_catalog_csv : str
         Output path for the reconstructed-source catalogue CSV.
-    parallel : bool, optional
+    parallel : bool
         If ``True``, process model directories in parallel. Default is
         ``True``.
-    parallel_epoch : bool, optional
+    parallel_epoch : bool
         If ``True``, process checkpoints within each model directory in
         parallel. Default is ``False``.
-    scaling : str, optional
+    scaling : str
         Scaling method to apply to the test images. Default is ``None``.
-    index : int, optional
+    index : int
         Index of the current worker. Default is ``0``.
-    concurrent_workers : int, optional
+    concurrent_workers : int
         Number of concurrent workers used for model selection. Default is ``1``.
+    condition_kwargs : dict
+        Extra keyword dictionary passed to ``condition`` when supported.
+    data_alias_enriched_hex : str
+        Hexadecimal alias for the data. Default is ``''``.
     """
     try:
 
@@ -2175,17 +2700,20 @@ def main(models_dir, data_kwargs, model_kwargs, kwargs_source, total_workers, ma
         logging.warning("get_test_images returned None, aborting.")
         return 
 
-    ensure_parent_dir_exists(all_metrics_csv)
+    if modulo is None:
+        modulo = 1
 
-    my_dict = find_best_performing_models(models_dir, condition, filter_model, model_prototype, n, 
-                                          index, concurrent_workers)
+    my_dict = find_best_performing_models(models_dir, condition, filter_model, model_prototype, modulo,
+                                          index, concurrent_workers, condition_kwargs=condition_kwargs)
     logging.info('main: model dict: %s', my_dict)
 
     jobs = []
     for model_dir in my_dict.keys():
         scales = decide_scale(model_dir)
+        model_df = my_dict[model_dir]
+        decoded_model_dir = os.path.dirname(os.path.dirname(model_df.iloc[0]['filepath']))
         jobs.append((model_dir, my_dict[model_dir], scales, test_images_df, 
-                     _decode_models_dir(os.path.dirname(model_dir))))
+                     _decode_models_dir(decoded_model_dir), data_alias_enriched_hex))
 
     if parallel:
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -2220,169 +2748,41 @@ def main(models_dir, data_kwargs, model_kwargs, kwargs_source, total_workers, ma
             except Exception as err:
                 logging.warning('main: error processing job: %s', err)
 
-def condition(model_info):
-    """Default checkpoint filter — keeps all checkpoints.
-
-    Receives the full *model_info* DataFrame for one model directory and
-    returns an index or boolean mask used to select rows (checkpoints).
-    Each row carries:
-
-    ``is_gan``, ``use_attention``, ``loss_function``,
-    ``data_alias_enriched_hex``, ``scaling_tag``, ``dropout_tag``,
-    ``activation_tag``, ``output_activation_tag``,
-    ``discriminator_activation_tag``, ``discriminator_output_activation_tag``,
-    ``model_dir``, ``checkpoints_dir``, ``filepath``, ``prefix``, ``epoch``.
-
-    Rows are pre-sorted: ``best_model`` prefix first, then descending epoch.
-
-    The fallback signature ``condition(model_dir: str) -> bool`` is also
-    supported for backward compatibility (keep/drop the whole directory).
-
-    Parameters
-    ----------
-    model_info : pandas.DataFrame
-        One model directory's checkpoint DataFrame.
-
-    Returns
-    -------
-    index-like
-        Any value accepted by ``DataFrame.loc[]``: a boolean Series, an
-        integer array/list of positional labels, or a slice.
-    """
-    return len(model_info) * [True]
-
-def get_top_best_models(file_list, x):
-    """Select the *x* most recent checkpoints by epoch number.
-
-    Epoch numbers are parsed from the last underscore-separated numeric token
-    in each filename.  Files with non-parseable names are silently skipped.
-
-    Parameters
-    ----------
-    file_list : list of str
-        Candidate checkpoint file paths.
-    x : int
-        Number of top checkpoints to return.
-
-    Returns
-    -------
-    list of str
-        Up to *x* file paths sorted by descending epoch number.
-    """
-    if not isinstance(x, int) or x <= 0:
-        return []
-
-    valid_files = []
-    for f in file_list:
-        try:
-            base = os.path.basename(f)
-            num_part = base.split('_')[-1].split('.')[0]
-            num = int(num_part)
-            valid_files.append((f, num))
-        except (ValueError, IndexError):
-            continue  # Skip malformed filenames
-
-    valid_files.sort(key=lambda item: item[1], reverse=True)
-
-    # Extract filenames
-    top_files = [f[0] for f in valid_files[:x]]
-
-    # Optional: Warn if fewer than x valid files are found
-    if len(top_files) < x:
-        logging.warning('get_top_best_models: only %d valid files found, requested %d', len(top_files), x)
-    return top_files
-
-def get_model_by_modulo(file_list, prototype, modulo=75):
-    """Select checkpoints at regular epoch intervals plus the final checkpoint.
-
-    Always includes any checkpoint whose filename contains ``'final'``.  For
-    the remaining files, selects epochs that are multiples of *modulo* and at
-    most 550, plus the very last numbered epoch.
-
-    Parameters
-    ----------
-    file_list : list of str
-        Candidate checkpoint file paths.
-    prototype : str
-        Unused glob prototype (kept for API compatibility with
-        :func:`find_best_performing_models`).
-    modulo : int, optional
-        Epoch interval. Default is 75.
-
-    Returns
-    -------
-    list of str
-        Selected checkpoint file paths.
-    """
-    selected = []
-    my_dict = {}
-    
-    for file in file_list:
-        if 'final' in os.path.basename(file):
-            selected.append(file)
-        else:
-            basename = os.path.basename(file).split('.')[0]
-            parts = basename.split('_')
-            for part in parts:
-                try:
-                    number = int(part)
-                    my_dict[number] = file
-                    break 
-                except Exception:
-                    continue
-
-    for index, (epoch, file) in enumerate(sorted(my_dict.items())):
-        if epoch % modulo == 0 and epoch <= 550:
-            selected.append(file)
-        elif index == len(my_dict) - 1:
-            selected.append(file)
-    return selected
-    
 if __name__ == '__main__':
 
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-    bootstrap_overrides = parse_config_overrides(start_index=3)
-    bootstrap_cfg = load_config(**bootstrap_overrides)
-    bootstrap_eval_cfg = bootstrap_cfg['metrics']
-
-    cursor = 1
-    index = 0
-    if len(sys.argv) > cursor and sys.argv[cursor].lstrip('-').isdigit():
-        index = int(sys.argv[cursor])
-        cursor += 1
-
-    concurrent_workers = 1
-    if len(sys.argv) > cursor and sys.argv[cursor].lstrip('-').isdigit():
-        concurrent_workers = int(sys.argv[cursor])
-        cursor += 1
-
-    configured_start_index = bootstrap_eval_cfg.get('positional_override_start_index')
-    if configured_start_index is None:
-        overrides = parse_config_overrides(start_index=cursor)
-    else:
-        overrides = parse_config_overrides(start_index=int(configured_start_index))
+    selector_cli = parse_runtime_selector_cli_args()
+    overrides = parse_config_overrides(start_index=selector_cli['cursor'])
     cfg = load_config(**overrides)
     eval_cfg = cfg['metrics']
-    set_checkpoint_info_filename(eval_cfg.get('checkpoint_info_filename', 'checkpoint_info.json'))
-    data_kwargs_cfg = eval_cfg.get('data_kwargs', {})
-    if isinstance(data_kwargs_cfg, dict):
-        kwargs_data_cfg = data_kwargs_cfg.get('kwargs_data', {})
-        if not isinstance(kwargs_data_cfg, dict):
-            kwargs_data_cfg = {}
-    else:
-        kwargs_data_cfg = {}
-    set_log_domain_clip_max(kwargs_data_cfg.get('log_domain_clip_max', 80.0))
+    data_cfg = dict(eval_cfg['data_kwargs']['kwargs_data'])
+
+    condition_kwargs = {
+        'data_alias_enriched_hex': (
+            selector_cli['data_alias_enriched_hex']
+            if selector_cli['data_alias_enriched_hex'] is not None
+            else data_cfg['data_alias_enriched_hex']
+        ),
+        'model_alias_hex': selector_cli['model_alias_hex'],
+        'epoch': selector_cli['epoch'],
+        'config_model_alias_hex': data_cfg['model_alias_hex']
+    }
+
+    set_checkpoint_info_filename(eval_cfg['checkpoint_info_filename'])
+    set_log_domain_clip_max(data_cfg['log_domain_clip_max'])
 
     main(eval_cfg['models_dir'],
          eval_cfg['data_kwargs'], eval_cfg['model_kwargs'], eval_cfg['kwargs_source'],
          eval_cfg['total_workers'], eval_cfg['max_workers'], eval_cfg['frac'],
-         condition, get_model_by_modulo, eval_cfg['n'], eval_cfg['model_prototype'],
+         condition, get_model_by_modulo, eval_cfg['modulo'], eval_cfg['model_prototype'],
          all_metrics_csv=eval_cfg['all_metrics_csv'],
          aggregated_metrics_csv=eval_cfg['aggregated_metrics_csv'],
          org_catalog_csv=eval_cfg['org_catalog_csv'],
          noisy_catalog_csv=eval_cfg['noisy_catalog_csv'],
          rec_catalog_csv=eval_cfg['rec_catalog_csv'],
          parallel=eval_cfg['parallel'], parallel_epoch=eval_cfg['parallel_epoch'], 
-         scaling=eval_cfg['scaling'], index=index, concurrent_workers=
-         concurrent_workers)
+         scaling=eval_cfg['scaling'], index=selector_cli['index'], concurrent_workers=selector_cli['concurrent_workers'], 
+         condition_kwargs=condition_kwargs, 
+         data_alias_enriched_hex=condition_kwargs['data_alias_enriched_hex']
+         )

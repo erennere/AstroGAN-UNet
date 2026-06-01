@@ -1,7 +1,6 @@
 """Merge uncropped source catalogs into a single photometric parquet table."""
 
-import argparse
-import glob
+import logging
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -10,6 +9,12 @@ import pandas as pd
 from sklearn.neighbors import KDTree
 
 from starter import load_config, parse_config_overrides
+from src.evaluation.metrics import (
+    condition,
+    find_best_performing_models,
+    get_model_by_modulo,
+    parse_runtime_selector_cli_args,
+)
 from src.training.utils import ensure_parent_dir_exists
 
 
@@ -203,7 +208,7 @@ def process(noise_csv, org_csv, rec_csv, workers, output_parquet, threshold=3.0)
         final_df.to_parquet(output_parquet, index=False)
 
 
-def _run_from_config(eval_cfg):
+def _run_from_config(eval_cfg, data_alias_enriched_hex, model_alias_hex, epoch):
     """Build file paths from evaluation config and execute one merge job.
 
     Expects uncropped evaluation catalog filenames in
@@ -211,11 +216,34 @@ def _run_from_config(eval_cfg):
     ``photometrical_data_filename`` relative to
     ``uncropped_output_dir``.
     """
-    file_dir = eval_cfg['uncropped_output_dir']
-    rec_filename = eval_cfg['uncropped_rec_catalog_csv']
-    noise_filename = eval_cfg['uncropped_noisy_catalog_csv']
-    org_filename = eval_cfg['uncropped_org_catalog_csv']
-    photometrical_data_filename = eval_cfg['photometrical_data_filename']
+    epoch_str = str(epoch)
+    file_dir = (
+        eval_cfg['uncropped_output_dir']
+        .replace('#', data_alias_enriched_hex)
+        .replace('&', model_alias_hex)
+        .replace('*', epoch_str)
+    )
+    rec_filename = (
+        eval_cfg['uncropped_rec_catalog_csv']
+        .replace('&', model_alias_hex)
+        .replace('*', epoch_str)
+    )
+    noise_filename = (
+        eval_cfg['uncropped_noisy_catalog_csv']
+        .replace('&', model_alias_hex)
+        .replace('*', epoch_str)
+    )
+    org_filename = (
+        eval_cfg['uncropped_org_catalog_csv']
+        .replace('&', model_alias_hex)
+        .replace('*', epoch_str)
+    )
+    photometrical_data_filename = (
+        eval_cfg['photometrical_data_filename']
+        .replace('#', data_alias_enriched_hex)
+        .replace('&', model_alias_hex)
+        .replace('*', epoch_str)
+    )
 
     rec_filepath = os.path.join(file_dir, rec_filename)
     noise_filepath = os.path.join(file_dir, noise_filename) 
@@ -226,16 +254,73 @@ def _run_from_config(eval_cfg):
     threshold = float(eval_cfg['merge_catalog_threshold'])
 
     process(
-            noise_csv=noise_filepath,
-            org_csv=org_filepath,
-            rec_csv=rec_filepath,
-            workers=workers,
-            threshold=threshold,
-            output_parquet=photometrical_data_filepath,
-        )
+        noise_csv=noise_filepath,
+        org_csv=org_filepath,
+        rec_csv=rec_filepath,
+        workers=workers,
+        threshold=threshold,
+        output_parquet=photometrical_data_filepath,
+    )
+
+
+def main():
+    """Load config, select matching checkpoints, and merge per-model catalogs."""
+    os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    selector_cli = parse_runtime_selector_cli_args()
+    overrides = parse_config_overrides(start_index=selector_cli['cursor'])
+    cfg = load_config(**overrides)
+    eval_cfg = cfg['merge_catalogs']
+
+    condition_kwargs = {
+        'data_alias_enriched_hex': (
+            selector_cli['data_alias_enriched_hex']
+            if selector_cli['data_alias_enriched_hex'] is not None
+            else eval_cfg['data_alias_enriched_hex']
+        ),
+        'model_alias_hex': selector_cli['model_alias_hex'],
+        'epoch': selector_cli['epoch'],
+        'config_model_alias_hex': eval_cfg['model_alias_hex'],
+    }
+
+    models_dict = find_best_performing_models(
+        eval_cfg['models_dir'],
+        condition=condition,
+        filter_model=get_model_by_modulo,
+        model_prototype=eval_cfg['model_prototype'],
+        modulo=eval_cfg['modulo'],
+        index=selector_cli['index'],
+        concurrent_workers=selector_cli['concurrent_workers'],
+        condition_kwargs=condition_kwargs,
+    )
+
+    jobs = []
+    for model_df in models_dict.values():
+        for _, row in model_df.iterrows():
+            jobs.append((row['model_alias_hex'], int(row['epoch'])))
+
+    if not jobs:
+        logging.warning('merge_catalogs: no matching model checkpoints were selected.')
+        return
+
+    with ProcessPoolExecutor(max_workers=eval_cfg['max_workers']) as executor:
+        futures = []
+        for model_alias_hex, epoch in jobs:
+            futures.append(
+                executor.submit(
+                    _run_from_config,
+                    eval_cfg,
+                    condition_kwargs['data_alias_enriched_hex'],
+                    model_alias_hex,
+                    epoch,
+                )
+            )
+
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as err:
+                logging.warning('merge_catalogs worker failed: %s', err)
 
 if __name__ == '__main__':
     """CLI entrypoint using the shared config loader and override parser."""
-    overrides = parse_config_overrides()
-    cfg = load_config(**overrides)
-    _run_from_config(cfg['merge_catalogs'])
+    main()

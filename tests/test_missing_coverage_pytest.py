@@ -77,6 +77,70 @@ def test_get_test_images_sets_test_flag_and_returns_pipeline_result(monkeypatch:
 
 
 @pytest.mark.unit
+def test_get_test_images_loads_cached_metadata_when_pipeline_returns_generator(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    cache_csv = tmp_path / 'test_cache.csv'
+    expected = pd.DataFrame({'location': ['a.fits'], 'exp_time': [120.0], 'new_exp_time': [60.0]})
+    expected.to_csv(cache_csv, index=False)
+
+    def fake_data_augment_pluggable(images, kwargs_data, scaling):
+        if False:
+            yield None
+        return
+
+    monkeypatch.setattr(metrics_mod, 'data_augment_pluggable', fake_data_augment_pluggable)
+
+    kwargs_data = {
+        'training': False,
+        'cache_raw_metadata': True,
+        'test_cache_filepath': str(cache_csv),
+    }
+    result = get_test_images([], kwargs_data, scaling='min_max')
+
+    assert kwargs_data['test'] is True
+    assert isinstance(result, pd.DataFrame)
+    assert list(result.columns) == ['location', 'exp_time', 'new_exp_time']
+    assert result.iloc[0]['location'] == 'a.fits'
+
+
+@pytest.mark.unit
+def test_get_test_images_builds_dataframe_from_generator_rows(monkeypatch: pytest.MonkeyPatch):
+    def fake_data_augment_pluggable(images, kwargs_data, scaling):
+        yield {'location': 'a.fits', 'exp_time': 100.0, 'new_exp_time': 50.0, 'combined_sigma': 1.0}
+        yield pd.Series({'location': 'b.fits', 'exp_time': 120.0, 'new_exp_time': 60.0, 'combined_sigma': 1.2})
+
+    monkeypatch.setattr(metrics_mod, 'data_augment_pluggable', fake_data_augment_pluggable)
+
+    kwargs_data = {'training': False, 'cache_raw_metadata': False}
+    result = get_test_images([], kwargs_data, scaling='min_max')
+
+    assert kwargs_data['test'] is True
+    assert isinstance(result, pd.DataFrame)
+    assert list(result.columns) == ['location', 'exp_time', 'new_exp_time', 'combined_sigma']
+    assert len(result) == 2
+
+
+@pytest.mark.unit
+def test_get_test_images_raises_for_generator_without_cache(monkeypatch: pytest.MonkeyPatch):
+    def fake_data_augment_pluggable(images, kwargs_data, scaling):
+        if False:
+            yield None
+        return
+
+    monkeypatch.setattr(metrics_mod, 'data_augment_pluggable', fake_data_augment_pluggable)
+
+    kwargs_data = {
+        'training': False,
+        'cache_raw_metadata': False,
+    }
+
+    with pytest.raises(TypeError, match='expected a pandas.DataFrame'):
+        get_test_images([], kwargs_data, scaling='min_max')
+
+
+@pytest.mark.unit
 def test_create_prediction_dataset_batches_patches_and_positions():
     image = np.arange(16, dtype=np.float32).reshape(4, 4, 1)
     dataset = create_prediction_dataset(image, patch_size=(2, 2, 1), stride=(2, 2, 1), batch_size=2)

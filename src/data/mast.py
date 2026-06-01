@@ -182,11 +182,10 @@ async def download_image(id_, url, save_dir, session, semaphore, filename, timeo
     
     async with semaphore:
         try:
-            if not session:
+            if session is None:
                 session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_seconds))
             async with session.get(url) as response:
                 if response.status == 200:
-
                     content = await response.read()
                     with fits.open(io.BytesIO(content)) as hdul:
                         hdul.writeto(filepath, overwrite=True)
@@ -235,10 +234,7 @@ async def download_images(ids, urls, save_dir, max_requests=5, reset_after=10, t
             if url is None or pd.isna(url) or str(url).strip() == '':
                 continue
             filename = os.path.basename(url)
-            try:
-                downloaded = await download_image(id_, url, save_dir, session, semaphore, filename, timeout_seconds)
-            except TypeError:
-                downloaded = await download_image(id_, url, save_dir, session, semaphore, filename)
+            downloaded = await download_image(id_, url, save_dir, session, semaphore, filename, timeout_seconds)
             if downloaded:
                 success_count += 1
     except Exception as err:
@@ -502,9 +498,6 @@ def main():
         raise TypeError("config['mast'] must be a mapping.")
 
     cfg = dict(root_cfg['mast'])
-    cfg.setdefault('query_limit', 5000)
-    cfg.setdefault('http_timeout_seconds', 15)
-    cfg.setdefault('min_chunk_size', 1)
     required_keys = [
         'mission',
         'filters',
@@ -521,6 +514,11 @@ def main():
         'url_column',
         'fetch_metadata',
         'resolve_urls',
+        'query_limit',
+        'http_timeout_seconds',
+        'min_chunk_size',
+        'prefer_token',
+        'save_dir',
     ]
     missing_keys = [k for k in required_keys if k not in cfg]
     if missing_keys:
@@ -533,10 +531,7 @@ def main():
 
     table = None
     if cfg['fetch_metadata']:
-        try:
-            table = filter_out_mast(cfg['mission'], cfg['filters'], cfg['query_limit'])
-        except TypeError:
-            table = filter_out_mast(cfg['mission'], cfg['filters'])
+        table = filter_out_mast(cfg['mission'], cfg['filters'], cfg['query_limit'])
         if table is None or table.empty:
             logging.warning('No metadata returned from MAST. Nothing to write.')
         else:
@@ -574,27 +569,16 @@ def main():
         if cfg['download'] and cfg['url_column'] in table.columns:
             valid = table[[cfg['id_column'], cfg['url_column']]].dropna(subset=[cfg['url_column']])
             if not valid.empty:
-                try:
-                    asyncio.run(
-                        download_images(
-                            valid[cfg['id_column']].tolist(),
-                            valid[cfg['url_column']].tolist(),
-                            cfg['save_dir'],
-                            max_requests=cfg['max_requests'],
-                            reset_after=cfg['reset_after'],
-                            timeout_seconds=cfg['http_timeout_seconds'],
-                        )
+                asyncio.run(
+                    download_images(
+                        valid[cfg['id_column']].tolist(),
+                        valid[cfg['url_column']].tolist(),
+                        cfg['save_dir'],
+                        max_requests=cfg['max_requests'],
+                        reset_after=cfg['reset_after'],
+                        timeout_seconds=cfg['http_timeout_seconds'],
                     )
-                except TypeError:
-                    asyncio.run(
-                        download_images(
-                            valid[cfg['id_column']].tolist(),
-                            valid[cfg['url_column']].tolist(),
-                            cfg['save_dir'],
-                            max_requests=cfg['max_requests'],
-                            reset_after=cfg['reset_after'],
-                        )
-                    )
+                )
 
 
 if __name__ == '__main__':

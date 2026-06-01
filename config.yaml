@@ -12,8 +12,8 @@ paths:
   fit_info_csv: "{data_dir}/fit_info_{data_alias_enriched_hex}.csv"
   models_dir: "../models"
   plots_dir: "../plots"
-  multimodal_metrics_dir: "../metrics/multi_modal"
-  singlemodal_metrics_dir: "../metrics/single_modal"
+  multimodal_metrics_dir: "../metrics/cropped_modal"
+  singlemodal_metrics_dir: "../metrics/uncropped_modal"
 
 mast:
   mission: hst
@@ -145,7 +145,7 @@ new_train:
     high: 20000
     samples: 30000
     val_samples: 100
-    test_samples: 100
+    test_samples: 30000
     times: 2
     training: true
     test: false
@@ -169,6 +169,7 @@ new_train:
     sub_sample_train: null
     sub_sample_eval: null
     sigma_kernel_fn: row
+    sigma_kernel_requires_fit_data: false
     noise_fn: _simulated_image_from_exposure
     min_value: 0.000000000001
     log_domain_clip_max: 80.0
@@ -248,6 +249,8 @@ new_train:
       filename_pattern: "{prefix}_{epoch}.keras"
 
 metrics:
+  data_alias_enriched_hex: null  # resolved from 'paths.data_alias_enriched_hex' at runtime
+  model_alias_hex: null  # resolved from 'paths.model_alias_hex' at runtime
   models_dir: null  # resolved from 'new_train.training.training_results_dir' at runtime
   metadata_filepath: null  # resolved from 'create_dataset.cropped_stats_output_file' at runtime
   type_of_image: null  # resolved from 'create_dataset.type_of_image' at runtime
@@ -259,24 +262,26 @@ metrics:
   npixels: null  # resolved from 'create_dataset.npixels' at runtime
   footprint_radius: null  # resolved from 'create_dataset.footprint_radius' at runtime
   maxiters: null  # resolved from 'create_dataset.maxiters' at runtime
+  bkg_box_size: null  # resolved from 'create_dataset.bkg_box_size' at runtime
   hist_min_exp: null  # resolved from 'new_train.data.lowest_power' at runtime
   hist_max_exp: null  # resolved from 'new_train.data.highest_power' at runtime
   model_prototype: null  # resolved from 'new_train.training.checkpoint_filename_pattern' at runtime
-  all_metrics_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/all_metrics_*.csv"
-  aggregated_metrics_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/aggregated_metrics_*.csv"
-  org_catalog_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/org_catalog_*.csv"
-  noisy_catalog_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/noisy_catalog_*.csv"
-  rec_catalog_csv: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/rec_catalog_*.csv"
+  all_metrics_csv: "{multimodal_metrics_dir}/#/all_metrics_*.csv"
+  aggregated_metrics_csv: "{multimodal_metrics_dir}/#/aggregated_metrics_*.csv"
+  org_catalog_csv: "{multimodal_metrics_dir}/#/org_catalog_*.csv"
+  noisy_catalog_csv: "{multimodal_metrics_dir}/#/noisy_catalog_*.csv"
+  rec_catalog_csv: "{multimodal_metrics_dir}/#/rec_catalog_*.csv"
   parallel: true
-  parallel_epoch: false
-  total_workers: 36
-  max_workers: 6
+  parallel_epoch: true
+  total_workers: 4
+  max_workers: 2
   frac: 0.20
-  n: 50
+  modulo: 20
   stride: [64, 64, 1]
   weighting: average
   gaussian_sigma: 64
   use_custom_test_images: false
+  exp_time_col: exp_time
   new_exp_time_col: new_exp_time
   deblend: false
   deblend_timeout: 30
@@ -307,53 +312,74 @@ metrics:
   deblend_cont: 0.005
   clean: true
   clean_param: 1.0
-  combined_images_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/combined_images"
-  png_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/pngs"
-  org_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/original_images"
-  noisy_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/noisy_images"
-  rec_dir: "{multimodal_metrics_dir}/{data_alias_enriched_hex}/*/reconstructed_images"
+  combined_images_dir: "{multimodal_metrics_dir}/#/*/&/combined_images"
+  png_dir: "{multimodal_metrics_dir}/#/*/&/pngs"
+  org_dir: "{multimodal_metrics_dir}/#/*/&/original_images"
+  noisy_dir: "{multimodal_metrics_dir}/#/*/&/noisy_images"
+  rec_dir: "{multimodal_metrics_dir}/#/*/&/reconstructed_images"
   use_mosaic: false
+  use_io_thread: true
+  save_images: true
+  overwrite: true
   checkpoint_info_filename: null  # resolved from 'new_train.training.checkpoint_info_filename' at runtime
-  positional_override_start_index: 3
 
 uncropped_metrics:
+  data_alias_enriched_hex: null  # resolved from 'paths.data_alias_enriched_hex' at runtime
+  model_alias_hex: null  # resolved from 'paths.model_alias_hex' at runtime
   models_dir: null  # resolved from 'new_train.training.training_results_dir' at runtime
   metadata_filepath: null  # resolved from 'create_dataset.cropped_stats_output_file' at runtime
   model_prototype: null  # resolved from 'new_train.training.checkpoint_filename_pattern' at runtime
+  modulo: null  # resolved from 'metrics.modulo' at runtime
   hist_min_exp: null  # resolved from 'new_train.data.lowest_power' at runtime
   hist_max_exp: null  # resolved from 'new_train.data.highest_power' at runtime
   kwargs_source: null  # resolved from 'metrics.kwargs_source' at runtime
   data_kwargs: null  # resolved from 'metrics.data_kwargs' at runtime
+  filter_by_last_name: null  # resolved from 'create_dataset.filter_by_last_name' at runtime
+  last_name_filter_value: null  # resolved from 'create_dataset.last_name_filter_value' at runtime
+  last_name_col: null  # resolved from 'create_dataset.last_name_col' at runtime
   uncropped_patch_size: null  # resolved from 'create_dataset.ps' at runtime
   uncropped_stride: null  # resolved from 'metrics.stride' at runtime
   uncropped_weighting: null  # resolved from 'metrics.weighting' at runtime
   uncropped_use_mosaic: false
   uncropped_save_images: true
-  uncropped_output_dir: "{singlemodal_metrics_dir}/{data_alias_enriched_hex}/{model_alias_hex}"
-  uncropped_combined_images_dir: "{singlemodal_metrics_dir}/{data_alias_enriched_hex}/{model_alias_hex}/combined_images"
-  uncropped_sampled_data_csv: "{singlemodal_metrics_dir}/{data_alias_enriched_hex}/{model_alias_hex}/sampled_data.csv"
+  uncropped_single_parallel: false
+  uncropped_write_histograms: true
+  uncropped_output_dir: "{singlemodal_metrics_dir}/#/&/*"
+  uncropped_combined_images_dir: "{singlemodal_metrics_dir}/#/&/*/combined_images"
+  uncropped_sampled_data_csv: "{singlemodal_metrics_dir}/#/&/*/sampled_data.csv"
   uncropped_n: 2000
-  uncropped_workers: 16
-  uncropped_results_csv: results_metrics_{model_alias_hex}.csv
-  uncropped_org_catalog_csv: org_catalog_{model_alias_hex}.csv
-  uncropped_noisy_catalog_csv: noise_catalog_{model_alias_hex}.csv
-  uncropped_rec_catalog_csv: rec_catalog_{model_alias_hex}.csv
-  uncropped_hist_data_csv: hist_data_{model_alias_hex}.csv
-  uncropped_hist_png_template: hist_{model_alias_hex}_{exp_ratio}.png
-  uncropped_batch_size: 1
-  uncropped_model_select_workers: 1
+  max_workers: 8
+  uncropped_workers: 8
+  uncropped_results_csv: results_metrics_&.csv
+  uncropped_org_catalog_csv: org_catalog_&.csv
+  uncropped_noisy_catalog_csv: noise_catalog_&.csv
+  uncropped_rec_catalog_csv: rec_catalog_&.csv
+  uncropped_hist_data_csv: hist_data_&.csv
+  uncropped_hist_png_template: hist_&_{exp_ratio}.png
+  uncropped_batch_size: 64
+  uncropped_save_combined_images: true
+  uncropped_overwrite: true
   checkpoint_info_filename: null  # resolved from 'metrics.checkpoint_info_filename' at runtime
 
 merge_catalogs:
+  data_alias_enriched_hex: null  # resolved from 'paths.data_alias_enriched_hex' at runtime
+  model_alias_hex: null  # resolved from 'paths.model_alias_hex' at runtime
+  models_dir: null  # resolved from 'new_train.training.training_results_dir' at runtime
+  model_prototype: null  # resolved from 'new_train.training.checkpoint_filename_pattern' at runtime
+  modulo: null  # resolved from 'metrics.modulo' at runtime
   uncropped_output_dir: null  # resolved from 'uncropped_metrics.uncropped_output_dir' at runtime
   uncropped_rec_catalog_csv: null  # resolved from 'uncropped_metrics.uncropped_rec_catalog_csv' at runtime
   uncropped_noisy_catalog_csv: null  # resolved from 'uncropped_metrics.uncropped_noisy_catalog_csv' at runtime
   uncropped_org_catalog_csv: null  # resolved from 'uncropped_metrics.uncropped_org_catalog_csv' at runtime
-  photometrical_data_filename: photometrical_data_{model_alias_hex}.parquet
-  merge_catalog_workers: 16
+  photometrical_data_filename: photometrical_data_&.parquet
+  merge_catalog_workers: 8
+  max_workers: 8
   merge_catalog_threshold: 3.0
 
+
 prepare_images:
+  data_alias_enriched_hex: null  # resolved from 'paths.data_alias_enriched_hex' at runtime
+  model_alias_hex: null  # resolved from 'paths.model_alias_hex' at runtime
   low: null  # resolved from 'new_train.data.low' at runtime
   metadata_filepath: null  # resolved from 'mast.metadata_output' at runtime
   dataset: null  # resolved from 'create_dataset.dataset' at runtime
@@ -362,10 +388,11 @@ prepare_images:
   type_of_image: null  # resolved from 'create_dataset.type_of_image' at runtime
   model_dir: null  # resolved from 'new_train.training.training_results_dir' at runtime
   model_prototype: null  # resolved from 'new_train.training.checkpoint_filename_pattern' at runtime
+  modulo: null  # resolved from 'metrics.modulo' at runtime
   scaling: null  # resolved from 'new_train.training.scaling' at runtime
   kwargs_source: null  # resolved from 'metrics.kwargs_source' at runtime
   data_kwargs: null  # resolved from 'new_train.data' at runtime
-  output_dir: "{plots_dir}/{data_alias_enriched_hex}/{model_alias_hex}/sources"
+  output_dir: "{plots_dir}/*/&/#/sources"
   sample_n: 100
   ratio_initial: 2
   ratio_count: 8
@@ -373,8 +400,14 @@ prepare_images:
   targ_col: sci_targname
   output_dpi: 500
   checkpoint_info_filename: null  # resolved from 'new_train.training.checkpoint_info_filename' at runtime
+  max_workers: 64
 
 prepare_plots:
+  data_alias_enriched_hex: null  # resolved from 'paths.data_alias_enriched_hex' at runtime
+  model_alias_hex: null  # resolved from 'paths.model_alias_hex' at runtime
+  models_dir: null  # resolved from 'new_train.training.training_results_dir' at runtime
+  model_prototype: null  # resolved from 'new_train.training.checkpoint_filename_pattern' at runtime
+  modulo: null  # resolved from 'metrics.modulo' at runtime
   metadata_filepath: null  # resolved from 'create_dataset.cropped_stats_output_file' at runtime
   uncropped_output_dir: null  # resolved from 'uncropped_metrics.uncropped_output_dir' at runtime
   photometrical_data_filename: null  # resolved from 'merge_catalogs.photometrical_data_filename' at runtime
@@ -383,5 +416,7 @@ prepare_plots:
   rec_cmap: viridis
   noise_cmap: cividis
   norm_quantiles: [1, 99]
+  max_workers: 64
   jansky_factor: 33356.4
   snr_filename: snr.png
+

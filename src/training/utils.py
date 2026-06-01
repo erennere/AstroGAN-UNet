@@ -990,17 +990,26 @@ def _augment_samples_based_on_range(sigma, lowest_power=-4, highest_power=5, n_s
         exponent_diff)``.
     """
     sigmas = []
-    if is_not_nan(sigma) and sigma != 0.0:
-        exponent = np.floor(np.log10(abs(sigma))).astype(int)
-        base = np.floor(sigma / (10.0**exponent))
-        if lowest_power <= exponent <= highest_power:
-            for x in range(exponent, highest_power + 1):
-                start = base if x == exponent else 1
-                stop = 9
-                for b in evenly_spaced_numbers(start, stop, n_samples_per_magnitude):
-                    sigma_value = b * 10.0**x
-                    sigmas.append((sigma_value, b, exponent, x - exponent))
-    return sigmas
+    try:
+        lowest_power = int(lowest_power)
+        highest_power = int(highest_power)
+        n_samples_per_magnitude = int(n_samples_per_magnitude)
+
+        if is_not_nan(sigma) and sigma != 0.0:
+            exponent = np.floor(np.log10(abs(sigma))).astype(int)
+            base = np.floor(sigma / (10.0**exponent)).astype(int)
+
+            if lowest_power <= exponent <= highest_power:
+                for x in range(exponent, highest_power + 1):
+                    start = base if x == exponent else 1
+                    stop = 9
+                    for b in evenly_spaced_numbers(start, stop, n_samples_per_magnitude):
+                        sigma_value = b * 10.0**x
+                        sigmas.append((sigma_value, b, exponent, x - exponent))
+        return sigmas
+    except Exception as error:
+        logging.warning(f'Error in _augment_samples_based_on_range with sigma={sigma}: {error}')
+        return []
 
 def candidates_based_on_range(row, kwargs_data):
     """
@@ -1050,35 +1059,43 @@ def candidates_based_on_range(row, kwargs_data):
         return []
     exposure_value = float(exposure_value)
 
+    source_row = row
     result = []
-    for new_sigma, base, exponent, exponent_difference in _augment_samples_based_on_range(
+    for sample in _augment_samples_based_on_range(
         sigma,
         lowest_power,
         highest_power,
         n_samples_per_magnitude,
     ):
+        if sample is None or len(sample) != 4:
+            logging.warning(f'Unexpected row format from _augment_samples_based_on_range: {sample}')
+            continue
+
+        new_sigma, base, exponent, exponent_difference = sample
         if not is_not_nan(new_sigma):
             continue
+        
         diff_sigma = np.sqrt(np.abs(new_sigma**2 - sigma**2))
-        new_exp_time = exposure_value * (new_sigma / sigma)**2 if sigma != 0 else 0.0
+        new_exp_time = exposure_value * (sigma / new_sigma)**2 if sigma != 0 else 0.0
         entry = {
-            'name': row[name_col], 'base': base, 'exponent': exponent, 'exponent_diff': exponent_difference,
+            'name': source_row[name_col], 'base': base, 'exponent': exponent, 'exponent_diff': exponent_difference,
             'combined_sigma': new_sigma, 'org_sigma': sigma, 'diff_sigma': diff_sigma,
-            'location': row[location_col], 'dataset': row[dataset_col],
-            'crop_abs_mean': row[scm['abs_mean']], 'full_abs_mean': row[org_scm['abs_mean']], 
-            'crop_abs_median': row[scm['abs_median']], 'full_abs_median': row[org_scm['abs_median']],
-            'crop_median_bkg':row[scm['median_bkg']], 'full_median_bkg': row[org_scm['median_bkg']],
-            'crop_mean_bkg': row[scm['mean_bkg']], 'full_mean_bkg': row[org_scm['mean_bkg']],
-            'crop_max_bkg': row[scm['max_bkg']], 'full_max_bkg': row[org_scm['max_bkg']],
-            'crop_median_src': row[scm['median_src']], 'full_median_src': row[org_scm['median_src']],
-            'crop_mean_src': row[scm['mean_src']], 'full_mean_src': row[org_scm['mean_src']],
-            'crop_max_src': row[scm['max_src']], 'full_max_src': row[org_scm['max_src']],
-            'sm_mean_NSR': row[scm['mean_src']]/new_sigma if new_sigma > 0 else 0.0, 'org_mean_NSR': row[scm['mean_src']]/sigma if sigma > 0 else 0.0,
-            'sm_median_NSR': row[scm['median_src']]/new_sigma if new_sigma > 0 else 0.0, 'org_median_NSR': row[scm['median_src']]/sigma if sigma > 0 else 0.0,
-            'sm_peak_NSR': row[scm['max_src']]/new_sigma if diff_sigma > 0 else 0.0, 'org_peak_NSR': row[scm['max_src']]/sigma if sigma > 0 else 0.0,
+            'location': source_row[location_col], 'dataset': source_row[dataset_col],
+            'crop_abs_mean': source_row[scm['abs_mean']], 'full_abs_mean': source_row[org_scm['abs_mean']], 
+            'crop_abs_median': source_row[scm['abs_median']], 'full_abs_median': source_row[org_scm['abs_median']],
+            'crop_median_bkg':source_row[scm['median_bkg']], 'full_median_bkg': source_row[org_scm['median_bkg']],
+            'crop_mean_bkg': source_row[scm['mean_bkg']], 'full_mean_bkg': source_row[org_scm['mean_bkg']],
+            'crop_max_bkg': source_row[scm['max_bkg']], 'full_max_bkg': source_row[org_scm['max_bkg']],
+            'crop_median_src': source_row[scm['median_src']], 'full_median_src': source_row[org_scm['median_src']],
+            'crop_mean_src': source_row[scm['mean_src']], 'full_mean_src': source_row[org_scm['mean_src']],
+            'crop_max_src': source_row[scm['max_src']], 'full_max_src': source_row[org_scm['max_src']],
+            'sm_mean_NSR': source_row[scm['mean_src']]/new_sigma if new_sigma > 0 else 0.0, 'org_mean_NSR': source_row[scm['mean_src']]/sigma if sigma > 0 else 0.0,
+            'sm_median_NSR': source_row[scm['median_src']]/new_sigma if new_sigma > 0 else 0.0, 'org_median_NSR': source_row[scm['median_src']]/sigma if sigma > 0 else 0.0,
+            'sm_peak_NSR': source_row[scm['max_src']]/new_sigma if new_sigma > 0 else 0.0, 'org_peak_NSR': source_row[scm['max_src']]/sigma if sigma > 0 else 0.0,
             'exp_time': exposure_value, 'new_exp_time': new_exp_time, 'exp_ratio': exposure_value/new_exp_time if new_exp_time > 0 else 0.0
         }
         result.append(entry)
+
     return result
 
 def candidates_based_on_ratio(row, kwargs_data):

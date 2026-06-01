@@ -160,7 +160,7 @@ def test_filter_out_metadata_invalid_path_returns_none():
 
 
 @pytest.mark.unit
-def test_find_best_models_filter_and_condition_fallback_branches(tmp_path: Path):
+def test_find_best_models_filter_and_condition_fallback_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     models_root = tmp_path / 'models'
     parts = ['gan', 'attn', 'mse', 'alias', 'z_scale', 'drop0', 'relu', 'sigmoid', 'lrelu', 'sigmoid']
     cp = models_root
@@ -171,23 +171,24 @@ def test_find_best_models_filter_and_condition_fallback_branches(tmp_path: Path)
     for filename in ('model_010.keras', 'model_020.keras'):
         (cp / filename).write_text('x', encoding='utf-8')
 
-    def one_arg_filter(file_list):
+    def one_arg_filter(file_list, prototype, modulo):
         return file_list[:1]
 
-    def weird_condition(_):
+    def weird_condition(_, condition_kwargs):
         raise RuntimeError('force fallback')
 
-    result = metrics_mod.find_best_performing_models(
-        str(models_root),
-        condition=weird_condition,
-        filter_model=one_arg_filter,
-        model_prototype='*.keras',
-        n=1,
-        index=0,
-        concurrent_workers=1,
-    )
+    monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda *_: {'model_alias_hex': 'test_alias', 'data_alias_enriched_hex': 'test_hex'})
 
-    assert isinstance(result, dict)
+    with pytest.raises(RuntimeError, match='force fallback'):
+        metrics_mod.find_best_performing_models(
+            str(models_root),
+            condition=weird_condition,
+            filter_model=one_arg_filter,
+            model_prototype='*.keras',
+            modulo=1,
+            index=0,
+            concurrent_workers=1,
+        )
 
 
 @pytest.mark.unit

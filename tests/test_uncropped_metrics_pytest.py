@@ -147,6 +147,17 @@ def test_main_aggregates_histograms_and_catalog_outputs(tmp_path: Path, mocker):
     mocker.patch('src.evaluation.uncropped_metrics.ProcessPoolExecutor', _FakeExecutor)
     mocker.patch('src.evaluation.uncropped_metrics.as_completed', side_effect=lambda futures: futures)
     mocker.patch('src.evaluation.uncropped_metrics.process_subdf', side_effect=fake_process_subdf)
+    mocker.patch(
+        'src.evaluation.uncropped_metrics.candidates_based_on_range',
+        side_effect=lambda row, kwargs: [
+            {
+                'exp_ratio': row['exp_ratio'],
+                'new_exp_time': 1.0,
+                'location': row['location'],
+                'name': row['name'],
+            }
+        ],
+    )
 
     output_dir = tmp_path / 'plots'
     output_paths = {
@@ -158,17 +169,45 @@ def test_main_aggregates_histograms_and_catalog_outputs(tmp_path: Path, mocker):
         'hist_png_template': str(tmp_path / 'results' / 'hist_{exp_ratio}.png'),
     }
 
-    um.main(
-        N=4,
-        model_filepath='model.keras',
+    eval_cfg = {
+        'uncropped_output_dir': str(tmp_path / 'results'),
+        'uncropped_combined_images_dir': str(tmp_path / 'combined'),
+        'uncropped_sampled_data_csv': str(tmp_path / 'sampled.csv'),
+        'uncropped_results_csv': 'results.csv',
+        'uncropped_org_catalog_csv': 'org.csv',
+        'uncropped_noisy_catalog_csv': 'noisy.csv',
+        'uncropped_rec_catalog_csv': 'rec.csv',
+        'uncropped_hist_data_csv': 'hist_data.csv',
+        'uncropped_hist_png_template': 'hist_{exp_ratio}.png',
+        'uncropped_n': 4,
+        'uncropped_workers': 2,
+        'hist_min_exp': -1,
+        'hist_max_exp': 1,
+        'uncropped_save_images': False,
+        'uncropped_save_combined_images': False,
+        'uncropped_overwrite': True,
+        'uncropped_single_parallel': False,
+        'uncropped_write_histograms': True,
+        'filter_by_last_name': False,
+        'last_name_col': 'sci_pi_last_name',
+        'last_name_filter_value': ['FABER'],
+        'kwargs_source': {
+            'sigma_key': 'combined_sigma',
+            'type_of_image': 'SCI',
+            'noise_fn': lambda img, row, sigma: img,
+            'uncropped_use_mosaic': True,
+        },
+    }
+    data_cfg = {'low': 1.0, 'log_domain_clip_max': 1.0}
+
+    um.orchestrate_uncropped_evaluation(
+        eval_cfg=eval_cfg,
+        data_cfg=data_cfg,
         metadata_filepath=str(metadata_csv),
-        output_dir=str(output_dir),
-        kwargs={'unused': True},
-        workers=2,
-        min_exp=-1,
-        max_exp=1,
-        output_paths=output_paths,
-        save_eval_images=False,
+        model_filepath='model.keras',
+        data_alias_enriched_hex='data_alias',
+        model_alias_hex='model_alias',
+        epoch='1',
     )
 
     results_df = pd.read_csv(output_paths['results_csv'])

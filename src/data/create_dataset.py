@@ -356,7 +356,7 @@ def filter_out_metadata(filepath, col, exp_column, allowed_survey, size=1000, lo
         logging.warning(f'no file found at: {filepath}')
         return
     try:
-        df = pd.read_csv(filepath)
+        df = pd.read_csv(filepath).iloc[0:20]
     except Exception as err:
         logging.warning(f'{filepath} is not a valid csv file: {err}')
         return
@@ -806,12 +806,14 @@ def control_flow(dataset_dir, metadata_filepath, survey_column, exp_column, id_c
                 futures = [
                     executor.submit(
                         process_image_stats, file, type_of_image,
-                        sigma, n_sigma,n_pixels, footprint_radius,
+                        sigma, n_sigma, n_pixels, footprint_radius,
                         maxiters, step, bkg_box_size, exclude_percentile, save,
                         os.path.join(folder, masked_images_dirname),  # where to write masked FITS
                         masked_filename_prefix, filename_column,
                         location_col, stats_column_map,
                         nan_value, posinf_value, neginf_value,
+                        None, crop_name_separator,
+                        crop_prefix_parts, original_filename_suffix,
                     )
                     for file in crops_to_process
                 ]
@@ -929,7 +931,7 @@ def main():
     overrides = parse_config_overrides()  # parses sys.argv by default
     cfg = load_config(**overrides)
     dataset_cfg = cfg['create_dataset']
-    set_histogram_bins_default(dataset_cfg.get('histogram_bins', 'auto'))
+    set_histogram_bins_default(dataset_cfg['histogram_bins'])
 
     control_flow(
         dataset_dir=dataset_cfg['dataset_dir'],

@@ -99,6 +99,9 @@ def test_main_loads_metadata_from_disk_and_merges(monkeypatch: pytest.MonkeyPatc
         'resolve_urls': True,
         'prefer_token': 'drz',
         'save_dir': str(tmp_path / 'dl'),
+        'query_limit': 5000,
+        'http_timeout_seconds': 15,
+        'min_chunk_size': 1,
     }
 
     monkeypatch.setattr(mast, 'parse_config_overrides', lambda *args, **kwargs: {})

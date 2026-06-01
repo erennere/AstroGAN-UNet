@@ -1,9 +1,21 @@
 # AstroGAN-UNet
 AstroGAN-UNet is my bachelor thesis project in physics, developed at the Max Planck Institute for Astronomy in Heidelberg under the supervision of Dr. Ivelina Momcheva.
 
-The project addresses a practical astronomy problem: many surveys in MAST are shallow and noisy, while deep observations are limited and expensive. This repository builds a reproducible pipeline to train image-reconstruction models that map noisy/shallow inputs toward cleaner reconstructions, then evaluates whether recovered structure and photometry remain scientifically useful.
+The project addresses a practical astronomy problem: many surveys in MAST are shallow and noisy, while deep observations are limited and expensive. This repository builds a reproducible pipeline to train image-reconstruction models that map noisy/shallow inputs toward cleaner reconstructions, then evaluates whether recovered structure and photometry remain scientifically useful. 
 
 Technically, AstroGAN-UNet is a TensorFlow/Keras pipeline for FITS-based denoising with U-Net and GAN variants, followed by source-extraction metrics, uncropped photometric catalog generation, and final visualization/report outputs.
+
+The network module is where the model is built. The model used in this project is either U-Net or a GAN with U-Net as the generator and normal CNN as the discriminator. The use of gan can be turned off by the parameter 'use_gan' in the config which can be overridden in runtime as well (TODO: add how). Attention mechanisms (TODO: add what they are and how they are used) can be turned on and off by (TODO: add which tag and how). This behaviour can also be overridden in runtime (TODO: add how). All network parameters such as batch normalization, the batch size, the dropout rate, in which layer it should start, loss and activation functions for both the generator (U-Net) and the discriminator (CNN), the number of layers, dimensions, epochs, saving rates, training and evaluation data etc. can be customized in the config.yaml or be overriddden during runtime using parsing, which allows a very versatile architecture as well  testing, experimenting with different configurations etc.(TODO: add a .md file for different parsing options as well as network parameters and refer to it here). 
+
+The data and models directories follow a deterministic directory hierarchy based on the chosen options in the config or runtime overrides. Codifying such information directly into directory and filenames would have resulted in very long strings which is why there are specific functions in starter.py to encode and decode these information. There is a script under src which maps such encoded names to required info (TODO: write a script which should return the decoded info from a string which could be a model or data directory or filename, keep it simple, use the already existing functions). Following this scheme allows training and evaluating multiple configurations in parallel without the need to manually change filenames, paths and configurations. 
+
+This model is developed to work with deep galaxy surveys. More precisely with images taken with Wide Field Camera (WFC3) and filter F160W on Hubble Space Telescope (HST) which is (TODO: add context here). The units are 'electron/s'. However, since none of these parameters are harcoded, they can be changed so that the model(s) can be used on different images. If the units are not in 'electron/s', the calculations especially the simulated noise creation might not as intended so change either the units or modify the functions for noise creation. Furthermore, the repository allows the filtering of surveys by last name, survey info or exposure time (TODO: add tags here) either via config or through runtime overrides. 
+
+'mast' queries the MASt database with given parameters and creates a .csv file (TODO how and which files). 
+
+
+
+
 
 The active pipeline is implemented under `src/`. The `legacy/` directory contains older standalone scripts that are not part of the current `src/` execution path and should be treated as historical utilities.
 

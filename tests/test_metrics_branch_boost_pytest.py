@@ -107,6 +107,7 @@ def test_detect_sources_deblend_exception_fallback(monkeypatch: pytest.MonkeyPat
         'footprint_radius': 2,
         'deblend': True,
         'deblend_timeout': 0.1,
+        'bkg_box_size': 8,
     }
 
     monkeypatch.setattr(metrics_mod, 'deblend_sources', lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('deblend fail')))
@@ -138,8 +139,15 @@ def test_process_models_parallel_future_exception(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.unit
 def test_metrics_main_parallel_job_future_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    checkpoint_path = tmp_path / 'models' / 'm' / 'checkpoints' / 'c.keras'
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text('x', encoding='utf-8')
     monkeypatch.setattr(metrics_mod, 'get_test_images', lambda *args, **kwargs: pd.DataFrame({'location': ['a']}))
-    monkeypatch.setattr(metrics_mod, 'find_best_performing_models', lambda *args, **kwargs: {'m': ['c.keras']})
+    monkeypatch.setattr(
+        metrics_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {'m': pd.DataFrame({'filepath': [str(checkpoint_path)], 'epoch': ['001']})},
+    )
     monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda *_: {'model_alias_hex': 'x'})
     monkeypatch.setattr(metrics_mod, 'decide_scale', lambda *_: None)
     monkeypatch.setattr(metrics_mod, 'ProcessPoolExecutor', lambda max_workers=1: _Executor(max_workers=max_workers, fail=True))
@@ -155,7 +163,7 @@ def test_metrics_main_parallel_job_future_error(monkeypatch: pytest.MonkeyPatch,
         frac=0.1,
         condition=lambda *_: True,
         filter_model=lambda files, *args: files,
-        n=1,
+        modulo=1,
         model_prototype='*.keras',
         all_metrics_csv=str(tmp_path / 'all.csv'),
         aggregated_metrics_csv=str(tmp_path / 'agg.csv'),

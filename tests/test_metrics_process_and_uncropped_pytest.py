@@ -104,7 +104,14 @@ def test_process_models_sequential_writeout(tmp_path: Path, monkeypatch: pytest.
     rec_catalog_csv = str(tmp_path / 'rec_*_catalog.csv')
 
     all_metrics, aggregated_metrics, dfs = process_models(
-        job=('model_dir', [model_file], None, test_images_df, {'model_alias_hex': 'alias'}),
+        job=(
+            'model_dir',
+            pd.DataFrame({'filepath': [model_file], 'epoch': ['010']}),
+            None,
+            test_images_df,
+            {'model_alias_hex': 'alias'},
+            'data_alias',
+        ),
         kwargs_source={'thresh': 1.0},
         workers=1,
         frac=1.0,
@@ -157,7 +164,7 @@ def test_process_models_invalid_job_returns_empty_frames():
 def test_process_models_raises_for_non_string_output_templates(tmp_path: Path):
     with pytest.raises(ValueError):
         process_models(
-            job=('model_dir', [], None, pd.DataFrame(), {'model_alias_hex': 'alias'}),
+            job=('model_dir', [], None, pd.DataFrame(), {'model_alias_hex': 'alias'}, 'data_alias'),
             kwargs_source={},
             workers=1,
             parallel=False,
@@ -229,6 +236,7 @@ def test_uncropped_process_data_and_subdf_with_mocks(tmp_path: Path, monkeypatch
             'type_of_image': 'SCI',
             'noise_fn': lambda cropped_image, row, noisy_sigma: cropped_image + noisy_sigma,
             'uncropped_use_mosaic': True,
+            'gaussian_sigma': 64,
         },
         bins=np.array([0.0, 1.0, 2.0]),
         save_eval_images=False,

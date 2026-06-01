@@ -11,8 +11,20 @@ These scripts do not replace Python entrypoints; they orchestrate them with repr
 | `setup_hpc_environment.sh` | Install Miniconda, create/update project conda env at project `.venv` |
 | `setup_hpc_environment_slurm.sh` | Submit environment setup as a SLURM batch job |
 | `check_gpu_hpc.sh` | Validate GPU visibility (`nvidia-smi`, TensorFlow, PyTorch) |
+| `migrate_models_dir_layout.sh` | Dry-run or execute the models directory layout migration under SLURM |
 | `mast_and_create_dataset.sh` | Run stage 1+2 job table (`mast` and `create_dataset`) |
 | `train_model_scenarios.sh` | Execute deterministic training scenario matrix across workers |
+| `metrics_single_run.sh` | Single-run `metrics` (`index=0`, `concurrent_workers=1`) |
+| `uncropped_metrics_single_run.sh` | Single-run `uncropped_metrics` |
+| `merge_catalogs_single_run.sh` | Single-run `merge_catalogs` |
+| `prepare_images_single_run.sh` | Single-run `prepare_images` |
+| `prepare_plots_single_run.sh` | Single-run `prepare_plots` |
+| `metrics_scenarios.sh` | 10-array model-parameter sweep for `metrics` |
+| `uncropped_metrics_scenarios.sh` | 10-array model-parameter sweep for `uncropped_metrics` |
+| `merge_catalogs_scenarios.sh` | 10-array model-parameter sweep for `merge_catalogs` |
+| `prepare_images_scenarios.sh` | 10-array model-parameter sweep for `prepare_images` |
+| `prepare_plots_scenarios.sh` | 10-array model-parameter sweep for `prepare_plots` |
+| `utils.sh` | Shared bash helpers for bootstrap, logging, thread env, and fixed stage args |
 
 ## Orchestration Flow
 
@@ -22,6 +34,11 @@ flowchart LR
 	env --> check[check_gpu_hpc.sh]
 	env --> data[mast_and_create_dataset.sh]
 	data --> train[train_model_scenarios.sh]
+	train --> metrics[metrics_scenarios.sh]
+	metrics --> uncropped[uncropped_metrics_scenarios.sh]
+	uncropped --> merge[merge_catalogs_scenarios.sh]
+	merge --> prepimg[prepare_images_scenarios.sh]
+	prepimg --> prepplots[prepare_plots_scenarios.sh]
 	slurm[setup_hpc_environment_slurm.sh] --> setup
 ```
 
@@ -45,6 +62,8 @@ From `src/`:
 bash bash/setup_hpc_environment.sh --clean-start
 sbatch bash/setup_hpc_environment_slurm.sh
 sbatch bash/check_gpu_hpc.sh
+sbatch bash/migrate_models_dir_layout.sh /gpfs/lsdf02/sd17f001/eren/network/models
+AUN_MIGRATE_EXECUTE=true sbatch bash/migrate_models_dir_layout.sh /gpfs/lsdf02/sd17f001/eren/network/models
 bash bash/mast_and_create_dataset.sh
 sbatch bash/mast_and_create_dataset.sh
 sbatch bash/train_model_scenarios.sh

@@ -55,16 +55,7 @@ def _instantiate_optimizer(optimizer_factory, candidate_kwargs):
         # Builtins/C extensions may not expose signatures; best effort.
         pass
 
-    try:
-        return optimizer_factory(**supported_kwargs)
-    except TypeError:
-        if supported_kwargs:
-            logging.warning(
-                'Optimizer %s rejected kwargs %s; falling back to default constructor.',
-                getattr(optimizer_factory, '__name__', str(optimizer_factory)),
-                sorted(supported_kwargs.keys()),
-            )
-        return optimizer_factory()
+    return optimizer_factory(**supported_kwargs)
 
 #######################ORIGINAL DATA AUGMENTATION (NO LONGER USED) ###############################
 ##################################################################################################
@@ -485,7 +476,7 @@ def data_augment_pluggable(images, kwargs_data, scaling=None):
     low = float(kwargs_data['low'])
     high = float(kwargs_data['high'])
     training = kwargs_data['training']
-    test = kwargs_data.get('test', False)
+    test = kwargs_data['test']
     samples = parse_required_int(kwargs_data['samples'], 'data.samples')
     val_samples = parse_required_int(kwargs_data['val_samples'], 'data.val_samples')
 
@@ -506,7 +497,7 @@ def data_augment_pluggable(images, kwargs_data, scaling=None):
     max_workers = kwargs_data['max_workers']
 
     fit_data = None
-    if kwargs_data.get('sigma_kernel_requires_fit_data', False):
+    if kwargs_data['sigma_kernel_requires_fit_data']:
         fit_data_filepath = kwargs_data['fit_data_filepath']
         if not os.path.exists(fit_data_filepath):
             raise FileNotFoundError(f'Fit data CSV not found: {fit_data_filepath}')
@@ -872,8 +863,8 @@ def main():
     discriminator_config = dict(training_config['discriminator_kwargs'])
     gan_config = dict(training_config['gan_kwargs'])
 
-    set_checkpoint_info_filename(training_config.get('checkpoint_info_filename', 'checkpoint_info.json'))
-    set_log_domain_clip_max(data_config.get('log_domain_clip_max', 80.0))
+    set_checkpoint_info_filename(training_config['checkpoint_info_filename'])
+    set_log_domain_clip_max(data_config['log_domain_clip_max'])
 
     logging.info('Resolved paths: training=%s eval=%s models=%s', data_config['training_path'], data_config['eval_path'], data_config['results_path'])
 
@@ -905,8 +896,8 @@ def main():
         validation_loss_filename=training_config['validation_loss_filename'],
         training_metrics_filename=training_config['training_metrics_filename'],
         config=train_cfg,
-        cpu_max_batch_size=training_config.get('cpu_max_batch_size', 2),
-        counter_initial_value=training_config.get('counter_initial_value', 0),
+        cpu_max_batch_size=training_config['cpu_max_batch_size'],
+        counter_initial_value=training_config['counter_initial_value'],
     )
     
 if __name__ == "__main__":

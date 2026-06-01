@@ -278,7 +278,7 @@ def test_download_image_returns_false_on_non_200(tmp_path: Path):
 def test_download_images_skips_nan_urls(tmp_path: Path, mocker):
     calls = []
 
-    async def fake_download(id_, url, save_dir, session, semaphore, filename):
+    async def fake_download(id_, url, save_dir, session, semaphore, filename, timeout_seconds):
         calls.append(url)
         return True
 

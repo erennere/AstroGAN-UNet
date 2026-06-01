@@ -373,11 +373,12 @@ def test_create_dataset_module_dunder_main_executes(monkeypatch: pytest.MonkeyPa
         'ps': 64,
         'max_workers': 1,
         'step': 5,
+        'histogram_bins': 10,
         'filter_by_last_name': False,
         'last_name_filter_value': [],
         'last_name_col': 'last_name',
     }
-
+ 
     monkeypatch.setattr(starter, 'parse_config_overrides', lambda *args, **kwargs: {})
     monkeypatch.setattr(starter, 'load_config', lambda **kwargs: {'create_dataset': dataset_cfg})
     monkeypatch.setattr(os, 'chdir', lambda *_args, **_kwargs: None)

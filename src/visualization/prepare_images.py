@@ -1,6 +1,7 @@
 """Prepare composite image panels and source-overlays for qualitative review."""
 
 import os, logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -17,7 +18,7 @@ from src.training.math_helpers import (
     set_log_domain_clip_max,
 )
 from starter import parse_config_overrides, load_config
-from src.evaluation.metrics import find_best_performing_models, get_model_by_modulo
+from src.evaluation.metrics import condition, find_best_performing_models, get_model_by_modulo, parse_runtime_selector_cli_args
 
 def build_composite_axes(num_panels):
     """Build a matplotlib figure with one full-width original-image axes on top
@@ -462,6 +463,89 @@ def coordinate_detect_source(org, noisy, recs, gammas, label, kwargs, output_fil
             output_filepath,
             output_dpi=output_dpi,
         )
+
+
+def render_selected_metadata_samples(selected_metadata_df, model_filepath, plot_data_cfg,
+                                     ps, dataset_name_col, target_col, output_dir,
+                                     kwargs_source, output_dpi=None):
+    """Render sampled metadata rows into composite and detection plots."""
+    logging.info(f"Sampled {len(selected_metadata_df)} images.")
+    logging.info(f"Loading model from {model_filepath}.")
+    model = load_checkpoint_model(
+        model_filepath,
+        compile=False,
+        custom_objects=build_checkpoint_custom_objects(),
+    )
+    logging.info("Model loaded.")
+
+    for (_, row), label in zip(
+        selected_metadata_df.iterrows(),
+        [f"ID{i+1}" for i in range(len(selected_metadata_df))]
+    ):
+        target = row[target_col]
+        id_ = row[dataset_name_col]
+        combined_label = f'target: {target}, sci_data_set_name: {id_}'
+        logging.info(f"Processing {label}: {combined_label}")
+        for index_2, (org, noisy, recs, gammas) in enumerate(
+            create_image(row, model, plot_data_cfg, ps=ps)
+        ):
+            if org is not None:
+                try:
+                    create_composite_plot(
+                        org, noisy, recs, gammas, combined_label,
+                        os.path.join(output_dir, f'{label}_{index_2}.png'),
+                        output_dpi,
+                    )
+                    coordinate_detect_source(
+                        org, noisy, recs, gammas, combined_label, kwargs_source,
+                        os.path.join(output_dir, f'{label}_{index_2}_detections.png'),
+                        output_dpi,
+                    )
+                    logging.info(f"  Saved crop {index_2}: {len(gammas)} gamma(s).")
+                except Exception as err:
+                    logging.warning(f"Visualization error for {label}_{index_2}: {err}")
+
+
+def select_metadata_and_render(vis_cfg, plot_data_cfg, model_filepath,
+                               metadata_filepath, low, sample_n,
+                               exp_col, ps, dataset_name_col, target_col,
+                               output_dir, kwargs_source):
+    """Resolve one model, load/sample metadata, and render qualitative outputs."""
+    if not os.path.exists(model_filepath):
+        logging.error(f"Model checkpoint file {model_filepath} does not exist. Please check your config and model selection criteria.")
+        return
+
+    checkpoint_info = read_checkpoint_info(model_filepath)
+    scaling = vis_cfg['scaling']
+    if isinstance(checkpoint_info, dict) and 'scaling' in checkpoint_info:
+        scaling = checkpoint_info['scaling']
+
+    if metadata_filepath is not None and not os.path.exists(metadata_filepath):
+        logging.error(f"Metadata file {metadata_filepath} does not exist. Please check your config.")
+        return
+    if metadata_filepath is not None:
+        logging.info(f"Loading metadata from {metadata_filepath}.")
+        metadata_df = pd.read_csv(metadata_filepath)
+    else:
+        logging.info("No metadata file provided; loading test images directly.")
+        metadata_df = get_test_images(None, plot_data_cfg, scaling=scaling)
+        metadata_df = metadata_df[metadata_df['location'].str.contains('test', na=False)].sample(frac=1)
+
+    selected_metadata_df = metadata_df[
+        metadata_df[exp_col] / plot_data_cfg['ratio_initial'] * (plot_data_cfg['ratio_initial'] ** plot_data_cfg['ratio_growth']) >= low
+    ].sample(n=sample_n)
+
+    render_selected_metadata_samples(
+        selected_metadata_df,
+        model_filepath,
+        plot_data_cfg,
+        ps,
+        dataset_name_col,
+        target_col,
+        output_dir,
+        kwargs_source,
+        vis_cfg['output_dpi'],
+    )
     
 def main():
     """Load config, sample evaluation images, and produce composite visualization PNGs.
@@ -485,16 +569,15 @@ def main():
     """
     os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
-    overrides = parse_config_overrides()
+    selector_cli = parse_runtime_selector_cli_args()
+    overrides = parse_config_overrides(start_index=selector_cli['cursor'])
     cfg = load_config(**overrides)
     logging.info("Config loaded.")
 
     vis_cfg = cfg['prepare_images']
     data_cfg = dict(vis_cfg['data_kwargs'])
-    set_checkpoint_info_filename(vis_cfg.get('checkpoint_info_filename', 'checkpoint_info.json'))
-    set_log_domain_clip_max(data_cfg.get('log_domain_clip_max', 80.0))
-
-    _output_dir     = vis_cfg['output_dir']
+    set_checkpoint_info_filename(vis_cfg['checkpoint_info_filename'])
+    set_log_domain_clip_max(data_cfg['log_domain_clip_max'])
 
     _low = vis_cfg['low']
     _metadata_fp    = vis_cfg['metadata_filepath']
@@ -505,73 +588,68 @@ def main():
     _exp_col = vis_cfg['exp_column']
     _targ_col = vis_cfg['targ_col']
 
+    condition_kwargs = {
+        'data_alias_enriched_hex': (
+            selector_cli['data_alias_enriched_hex']
+            if selector_cli['data_alias_enriched_hex'] is not None
+            else vis_cfg['data_alias_enriched_hex']
+        ),
+        'model_alias_hex': selector_cli['model_alias_hex'],
+        'epoch': selector_cli['epoch'],
+        'config_model_alias_hex': data_cfg['model_alias_hex']
+    }
+    
     plot_data_cfg = dict(data_cfg)
     plot_data_cfg['type_of_image'] = vis_cfg['type_of_image']
     for x in ('ratio_initial', 'ratio_count', 'ratio_growth'):
         plot_data_cfg[x] = vis_cfg[x]
+    _output_dir     = vis_cfg['output_dir']
 
-    model_filepath = find_best_performing_models(
+    model_dict = find_best_performing_models(
         vis_cfg['model_dir'],
-        condition = lambda df: np.zeros(len(df)) == 0,
+        condition=condition,
         filter_model=get_model_by_modulo,
         model_prototype=vis_cfg['model_prototype'],
-        n=1,
-        index=0,
-        concurrent_workers=1
-        )
-    checkpoint_info = read_checkpoint_info(model_filepath)
-    scaling = checkpoint_info.get('scaling', vis_cfg['scaling']) if isinstance(checkpoint_info, dict) else vis_cfg['scaling']
-
-    if _metadata_fp is not None and not os.path.exists(_metadata_fp):
-        logging.error(f"Metadata file {_metadata_fp} does not exist. Please check your config.")
-        return
-    elif _metadata_fp is not None:
-        logging.info(f"Loading metadata from {_metadata_fp}.")
-        metadata_df = pd.read_csv(_metadata_fp)
-    else:
-        logging.info("No metadata file provided; loading test images directly.")
-        metadata_df = get_test_images(None, plot_data_cfg, scaling=scaling)
-        metadata_df = metadata_df[metadata_df['location'].str.contains('test', na=False)].sample(frac=1)
-
-    selected_metadata_df = metadata_df[
-        metadata_df[_exp_col] / plot_data_cfg['ratio_initial']*(plot_data_cfg['ratio_initial']**plot_data_cfg['ratio_growth']) >= _low
-    ].sample(n=_sample_n)
-
-    logging.info(f"Sampled {len(selected_metadata_df)} images.")
-    logging.info(f"Loading model from {model_filepath}.")
-    model = load_checkpoint_model(
-        model_filepath,
-        compile=False,
-        custom_objects=build_checkpoint_custom_objects(),
+        modulo=vis_cfg['modulo'],
+        index=selector_cli['index'],
+        concurrent_workers=selector_cli['concurrent_workers'],
+        condition_kwargs=condition_kwargs,
     )
-    logging.info("Model loaded.")
 
-    for (_, row), label in zip(
-        selected_metadata_df.iterrows(),
-        [f"ID{i+1}" for i in range(len(selected_metadata_df))]
-    ):
-        target = row[_targ_col]
-        id_ = row[_dataset_name]
-        combined_label = f'target: {target}, sci_data_set_name: {id_}'
-        logging.info(f"Processing {label}: {combined_label}")
-        for index_2, (org, noisy, recs, gammas) in enumerate(
-            create_image(row, model, plot_data_cfg, ps=_ps)
-        ):
-            if org is not None:
-                try:
-                    create_composite_plot(
-                        org, noisy, recs, gammas, combined_label,
-                        os.path.join(_output_dir, f'{label}_{index_2}.png'),
-                        vis_cfg.get('output_dpi', None),
-                    )
-                    coordinate_detect_source(
-                        org, noisy, recs, gammas, combined_label, _kwargs_source,
-                        os.path.join(_output_dir, f'{label}_{index_2}_detections.png'),
-                        vis_cfg.get('output_dpi', None),
-                    )
-                    logging.info(f"  Saved crop {index_2}: {len(gammas)} gamma(s).")
-                except Exception as err:
-                    logging.warning(f"Visualization error for {label}_{index_2}: {err}")
+    jobs = []
+    model_alias_hex = condition_kwargs.get('model_alias_hex', 'config_model_alias_hex')
+    for model_dir, model_df in model_dict.items():
+        for _, model_row in model_df.iterrows():
+            _output_dir_model = _output_dir.replace(
+                '*', condition_kwargs['data_alias_enriched_hex']
+                ).replace(
+                '&', model_alias_hex
+                ).replace('#', f"epoch{model_row['epoch']}")
+            
+            jobs.append((model_row['filepath'], _output_dir_model))
+
+    with ProcessPoolExecutor(max_workers=vis_cfg['max_workers']) as executor:
+        futures = [executor.submit(
+            select_metadata_and_render,
+            vis_cfg,
+            plot_data_cfg,
+            model_filepath,
+            _metadata_fp,
+            _low,
+            _sample_n,
+            _exp_col,
+            _ps,
+            _dataset_name,
+            _targ_col,
+            _output_dir_model,
+            _kwargs_source,
+        ) for model_filepath, _output_dir_model in jobs]
+
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as err:
+                logging.warning(f"An error occurred during processing: {err}")
 
 if __name__ == "__main__":
     main()

@@ -202,6 +202,8 @@ def test_resolve_config_uses_local_non_null_value_and_fills_null_runtime_values(
     cfg['create_dataset']['exposure_col'] = None
     cfg['create_dataset']['id_column'] = None
     cfg['create_dataset']['exp_column'] = None
+    cfg.setdefault('paths', {})['data_alias_enriched_hex'] = 'owner_data_alias'
+    cfg['paths']['model_alias_hex'] = 'owner_model_alias'
 
     resolved = starter.resolve_config(cfg)
 

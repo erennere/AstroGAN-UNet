@@ -812,7 +812,7 @@ def _decode_models_dir(models_dir):
 
     normalized = models_dir.strip().replace('\\', '/').rstrip('/')
     match = re.fullmatch(
-        r'(?P<models_root_dir>.+)/(?P<is_gan>GAN|UNET)/(?P<use_attention>ATTN|NOATTN)/(?P<loss_function>[^/]+)/(?P<data_alias_enriched_hex>[^/]+)/(?P<scaling_tag>[^/]+)/DO(?P<dropout_tag>[^/]+)/ACT(?P<activation_tag>[^/]+)/OUT(?P<output_activation_tag>[^/]+)/DACT(?P<discriminator_activation_tag>[^/]+)/DOUT(?P<discriminator_output_activation_tag>[^/]+)',
+        r'(?P<models_root_dir>.+)/(?P<data_alias_enriched_hex>[^/]+)/(?P<is_gan>GAN|UNET)/(?P<use_attention>ATTN|NOATTN)/(?P<loss_function>[^/]+)/(?P<scaling_tag>[^/]+)/DO(?P<dropout_tag>[^/]+)/ACT(?P<activation_tag>[^/]+)/OUT(?P<output_activation_tag>[^/]+)/DACT(?P<discriminator_activation_tag>[^/]+)/DOUT(?P<discriminator_output_activation_tag>[^/]+)',
         normalized,
     )
     if match is None:
@@ -1165,8 +1165,8 @@ def _build_template_context(config_data, explicit_overrides):
     model_alias_hex = _model_alias_dict['model_alias_hex']
     model_alias_plain = _model_alias_dict['model_alias_plain']
     models_dir = f"""{config_data['paths']['models_dir']}/
-            {is_gan}/{use_attention}/{loss_function}/
-            {data_alias_enriched_hex}/{scaling_tag}/DO{dropout_tag}/
+            {data_alias_enriched_hex}/{is_gan}/{use_attention}/{loss_function}/
+            {scaling_tag}/DO{dropout_tag}/
             ACT{activation_tag}/OUT{output_activation_tag}/
             DACT{discriminator_activation_tag}/DOUT{discriminator_output_activation_tag}
             """.replace('\n', '').replace(' ', '')
@@ -1210,6 +1210,9 @@ def _normalize_config_tree(config_data, template_context, label):
     paths_cfg = _require_mapping(normalized['paths'], f'{label}["paths"]')
     for key in ('data_dir', 'models_dir', 'multimodal_metrics_dir', 'singlemodal_metrics_dir', 'plots_dir'):
         paths_cfg[key] = _normalize_paths(template_context[key], template_context)
+    # Expose derived tags as runtime-resolved values for downstream sections.
+    paths_cfg['data_alias_enriched_hex'] = template_context['data_alias_enriched_hex']
+    paths_cfg['model_alias_hex'] = template_context['model_alias_hex']
     return normalized
 
 
@@ -1424,6 +1427,54 @@ def _finalize_new_train_section(section_cfg, _resolved_root):
     training_cfg['gan_kwargs'] = copy.deepcopy(section_cfg['gan'])
 
 
+# ---------------------------------------------------------------------------
+# Metrics section finalization — classification constants
+# ---------------------------------------------------------------------------
+
+# Keys that go into kwargs_source (source-detection / photometry parameters).
+_METRICS_KWARGS_SOURCE_KEYS = frozenset({
+    'sigma', 'maxiters', 'nsigma', 'npixels', 'nlevels', 'contrast',
+    'footprint_radius', 'distance_threshold', 'deblend', 'deblend_timeout',
+    'alpha', 'beta', 'gamma', 'k1', 'k2', 'win_size', 'win_sigma',
+    'func', 'thresh', 'org_thresh', 'radius_factor', 'PHOT_FLUXFRAC',
+    'flux_radius_subpix',
+    'r_min', 'elongation_fraction', 'PHOT_AUTOPARAMS', 'maskthresh',
+    'minarea', 'org_minarea', 'filter_type', 'deblend_nthresh', 'deblend_cont',
+    'clean', 'clean_param',
+    'bkg_box_size',
+})
+
+# Keys consumed by main() for orchestration — not forwarded to process_models.
+_METRICS_ORCHESTRATION_KEYS = frozenset({
+    'models_dir', 'parallel', 'parallel_epoch', 'total_workers', 'max_workers',
+    'frac', 'modulo', 'scaling', 'model_prototype', 'metadata_filepath',
+    'all_metrics_csv', 'aggregated_metrics_csv', 'org_catalog_csv',
+    'noisy_catalog_csv', 'rec_catalog_csv',
+    'data_alias_enriched_hex', 'model_alias_hex',
+    'use_custom_test_images', 'hist_min_exp', 'hist_max_exp',
+    'checkpoint_info_filename',
+})
+
+# Derived dict keys assembled by the finalizer — excluded from auto-extraction.
+_METRICS_DERIVED_DICT_KEYS = frozenset({'data_kwargs', 'model_kwargs', 'kwargs_source'})
+
+# Keys owned by new_train.data (data_cfg) — priority-resolved, not auto-extracted.
+_METRICS_DATA_CFG_OWNED_KEYS = frozenset({
+    'nan_value', 'posinf_value', 'neginf_value', 'location_col', 'sigma_key', 'noise_fn',
+})
+
+# section_cfg list values coerced to tuple when building model_kwargs.
+_METRICS_TUPLE_COERCE_KEYS = frozenset({'patch_size', 'stride'})
+
+# Full exclusion set: section_cfg keys NOT auto-extracted into model_kwargs.
+_METRICS_MODEL_KWARGS_EXCLUDED = (
+    _METRICS_KWARGS_SOURCE_KEYS
+    | _METRICS_ORCHESTRATION_KEYS
+    | _METRICS_DERIVED_DICT_KEYS
+    | _METRICS_DATA_CFG_OWNED_KEYS
+)
+
+
 def _finalize_metrics_section(section_cfg, resolved_root):
     data_cfg = copy.deepcopy(resolved_root['new_train']['data'])
     create_dataset_cfg = resolved_root['create_dataset']
@@ -1431,51 +1482,45 @@ def _finalize_metrics_section(section_cfg, resolved_root):
     section_cfg['func'] = _resolve_name_from_runtime_registry(section_cfg['func'])
     noise_fn = data_cfg['noise_fn']
 
+    data_cfg['data_alias_enriched_hex'] = section_cfg['data_alias_enriched_hex']
+    data_cfg['model_alias_hex'] = section_cfg['model_alias_hex']
+
     section_cfg['data_kwargs'] = {
         'kwargs_data': data_cfg,
     }
     if section_cfg['use_custom_test_images']:
         section_cfg['data_kwargs']['kwargs_data']['metadata_filepath'] = create_dataset_cfg['noisy_filtered_metadata_output_file']
 
-    section_cfg['model_kwargs'] = {
-        'patch_size': tuple(section_cfg['patch_size']),
-        'stride': tuple(section_cfg['stride']),
-        'weighting': section_cfg['weighting'],
-        'batch_size': section_cfg['batch_size'],
-        'gaussian_sigma': section_cfg['gaussian_sigma'],
-        'type_of_image': section_cfg['type_of_image'],
-        'nan_value': data_cfg['nan_value'],
-        'posinf_value': data_cfg['posinf_value'],
-        'neginf_value': data_cfg['neginf_value'],
-        'location_col': data_cfg['location_col'],
-        'exp_time_col': data_cfg['exposure_col'],
-        'new_exp_time_col': section_cfg['new_exp_time_col'],
-        'sigma_key': data_cfg['sigma_key'],
-        'noise_fn': noise_fn,
-        'combined_images_dir': section_cfg['combined_images_dir'],
-        'png_dir': section_cfg['png_dir'],
-        'org_dir': section_cfg['org_dir'],
-        'noisy_dir': section_cfg['noisy_dir'],
-        'rec_dir': section_cfg['rec_dir'],
-        'use_mosaic': section_cfg['use_mosaic'],
-    }
+    # data_cfg-owned keys — section_cfg value wins when explicitly set (not null).
+    model_kwargs = {}
+    for key in ('nan_value', 'posinf_value', 'neginf_value', 'location_col', 'sigma_key'):
+        if key in section_cfg and section_cfg[key] is not None:
+            model_kwargs[key] = section_cfg[key]
+        else:
+            model_kwargs[key] = data_cfg[key]
+    model_kwargs['noise_fn'] = noise_fn
 
-    source_keys = [
-        'sigma', 'maxiters', 'nsigma', 'npixels', 'nlevels', 'contrast',
-        'footprint_radius', 'distance_threshold', 'deblend', 'deblend_timeout',
-        'alpha', 'beta', 'gamma', 'k1', 'k2', 'win_size', 'win_sigma',
-        'func', 'thresh', 'org_thresh', 'radius_factor', 'PHOT_FLUXFRAC',
-        'r_min', 'elongation_fraction', 'PHOT_AUTOPARAMS', 'maskthresh',
-        'minarea', 'org_minarea', 'filter_type', 'deblend_nthresh', 'deblend_cont',
-        'clean', 'clean_param',
-    ]
-    section_cfg['kwargs_source'] = {key: copy.deepcopy(section_cfg[key]) for key in source_keys if key in section_cfg}
+    # All non-excluded, non-null flat section_cfg keys — no whitelist maintenance needed.
+    # Adding a new key to config.yaml metrics: flows here automatically.
+    for key, value in section_cfg.items():
+        if key in _METRICS_MODEL_KWARGS_EXCLUDED:
+            continue
+        if value is None:
+            continue
+        if key in _METRICS_TUPLE_COERCE_KEYS:
+            value = tuple(value)
+        model_kwargs[key] = value
+
+    section_cfg['model_kwargs'] = model_kwargs
+
+    section_cfg['kwargs_source'] = {key: copy.deepcopy(section_cfg[key]) for key in _METRICS_KWARGS_SOURCE_KEYS if key in section_cfg}
     section_cfg['kwargs_source']['sigma_key'] = data_cfg['sigma_key']
     section_cfg['kwargs_source']['noise_fn'] = noise_fn
     section_cfg['kwargs_source']['type_of_image'] = section_cfg['type_of_image']
     section_cfg['kwargs_source']['nan_value'] = data_cfg['nan_value']
     section_cfg['kwargs_source']['posinf_value'] = data_cfg['posinf_value']
     section_cfg['kwargs_source']['neginf_value'] = data_cfg['neginf_value']
+    section_cfg['kwargs_source']['gaussian_sigma'] = section_cfg['gaussian_sigma']
 
 
 def _finalize_uncropped_metrics_section(section_cfg, _resolved_root):
@@ -1485,8 +1530,27 @@ def _finalize_uncropped_metrics_section(section_cfg, _resolved_root):
     kwargs_source['uncropped_weighting'] = section_cfg['uncropped_weighting']
     kwargs_source['uncropped_batch_size'] = section_cfg['uncropped_batch_size']
     kwargs_source['uncropped_use_mosaic'] = section_cfg['uncropped_use_mosaic']
+    kwargs_source['uncropped_save_images'] = section_cfg['uncropped_save_images']
+    kwargs_source['uncropped_single_parallel'] = section_cfg['uncropped_single_parallel']
+    kwargs_source['uncropped_write_histograms'] = section_cfg['uncropped_write_histograms']
+    kwargs_source['data_alias_enriched_hex'] = section_cfg['data_alias_enriched_hex']
+    kwargs_source['model_alias_hex'] = section_cfg['model_alias_hex']
     section_cfg['kwargs_source'] = kwargs_source
     section_cfg['data_kwargs'] = copy.deepcopy(section_cfg['data_kwargs'])
+    section_cfg['data_kwargs']['kwargs_data']['data_alias_enriched_hex'] = section_cfg['data_alias_enriched_hex']
+    section_cfg['data_kwargs']['kwargs_data']['model_alias_hex'] = section_cfg['model_alias_hex']
+
+
+def _finalize_prepare_images_section(section_cfg, resolved_root):
+    # Required keys are owned by prepare_images section and resolved before finalization.
+    section_cfg['data_alias_enriched_hex'] = section_cfg['data_alias_enriched_hex']
+    section_cfg['model_alias_hex'] = section_cfg['model_alias_hex']
+
+
+def _finalize_prepare_plots_section(section_cfg, resolved_root):
+    # Required keys are owned by prepare_plots section and resolved before finalization.
+    section_cfg['data_alias_enriched_hex'] = section_cfg['data_alias_enriched_hex']
+    section_cfg['model_alias_hex'] = section_cfg['model_alias_hex']
 
 
 # ---------------------------------------------------------------------------
@@ -1498,6 +1562,8 @@ _SECTION_FINALIZERS = {
     'new_train': _finalize_new_train_section,
     'metrics': _finalize_metrics_section,
     'uncropped_metrics': _finalize_uncropped_metrics_section,
+    'prepare_images': _finalize_prepare_images_section,
+    'prepare_plots': _finalize_prepare_plots_section,
 }
 
 _DERIVED_FORCED_OUTPUTS = {

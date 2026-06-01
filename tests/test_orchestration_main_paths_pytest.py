@@ -119,7 +119,7 @@ def test_metrics_plot_source_comparison_invalid_and_scaling_error(monkeypatch: p
 
 
 @pytest.mark.unit
-def test_find_best_performing_models_selects_checkpoint_files(tmp_path: Path):
+def test_find_best_performing_models_selects_checkpoint_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     models_root = tmp_path / 'models'
     parts = [
         'gan',
@@ -139,21 +139,22 @@ def test_find_best_performing_models_selects_checkpoint_files(tmp_path: Path):
     checkpoints_dir = checkpoints_dir / 'checkpoints'
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
+    monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda *_: {'model_alias_hex': 'test_alias', 'data_alias_enriched_hex': 'test_hex'})
     for filename in ('best_model_010.keras', 'model_005.keras', 'final_model.keras'):
         (checkpoints_dir / filename).write_text('x', encoding='utf-8')
 
     selected = metrics_mod.find_best_performing_models(
         str(models_root),
-        condition=lambda info: info['epoch'] >= 0,
+        condition=lambda info, kwargs=None: info['epoch'] >= 0,
         filter_model=lambda files, *args: files,
         model_prototype='*.keras',
-        n=3,
         index=0,
         concurrent_workers=1,
     )
 
     assert len(selected) == 1
-    selected_files = list(selected.values())[0]
+    selected_df = list(selected.values())[0]
+    selected_files = selected_df['filepath'].tolist()
     assert any('best_model_010.keras' in path for path in selected_files)
 
 
@@ -165,7 +166,6 @@ def test_find_best_performing_models_rejects_empty_prototype(tmp_path: Path):
             condition=lambda _: True,
             filter_model=lambda files, *args: files,
             model_prototype='',
-            n=1,
             index=0,
             concurrent_workers=1,
         )
@@ -174,7 +174,7 @@ def test_find_best_performing_models_rejects_empty_prototype(tmp_path: Path):
 @pytest.mark.unit
 def test_reconstruct_patch_with_and_without_scaling(monkeypatch: pytest.MonkeyPatch):
     class DummyModel:
-        def predict(self, arr):
+        def predict(self, arr, verbose=0):
             return np.asarray(arr, dtype=np.float32) * 0.5
 
     noisy_patch = np.ones((16, 16), dtype=np.float32)
@@ -221,10 +221,15 @@ def test_reconstruct_patch_with_and_without_scaling(monkeypatch: pytest.MonkeyPa
 @pytest.mark.unit
 def test_metrics_main_non_parallel_orchestration(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     calls = []
+    decoded = []
+    model_dir = 'data_alias/UNET/ATTN/MAE/z_scale/DO0p2/ACTleakyrelu/OUTnone/DACTleakyrelu/DOUTnone'
+    model_path = tmp_path / 'models_root' / model_dir / 'checkpoints' / 'm1.keras'
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_text('x', encoding='utf-8')
 
     monkeypatch.setattr(metrics_mod, 'get_test_images', lambda *args, **kwargs: pd.DataFrame({'location': ['a'], 'exp_time': [1.0]}))
-    monkeypatch.setattr(metrics_mod, 'find_best_performing_models', lambda *args, **kwargs: {'gan/min_max': ['m1.keras']})
-    monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda *_: {})
+    monkeypatch.setattr(metrics_mod, 'find_best_performing_models', lambda *args, **kwargs: {model_dir: pd.DataFrame({'filepath': [str(model_path)], 'epoch': ['001']})})
+    monkeypatch.setattr(metrics_mod, '_decode_models_dir', lambda value: decoded.append(value) or {})
     monkeypatch.setattr(metrics_mod, 'decide_scale', lambda *_: None)
 
     def fake_process_models(job, kwargs_source, workers, frac, parallel, **kwargs):
@@ -242,7 +247,7 @@ def test_metrics_main_non_parallel_orchestration(monkeypatch: pytest.MonkeyPatch
         frac=0.5,
         condition=lambda _: True,
         filter_model=lambda files, *args: files,
-        n=1,
+        modulo=1,
         model_prototype='*.keras',
         all_metrics_csv=str(tmp_path / 'all.csv'),
         aggregated_metrics_csv=str(tmp_path / 'agg.csv'),
@@ -257,10 +262,28 @@ def test_metrics_main_non_parallel_orchestration(monkeypatch: pytest.MonkeyPatch
     )
 
     assert len(calls) == 1
+    assert decoded == [str(model_path.parent.parent)]
 
 
 @pytest.mark.unit
 def test_prepare_images_main_executes_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    class _FakeFuture:
+        def __init__(self, value=None):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class _FakeExecutor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            return _FakeFuture(fn(*args, **kwargs))
+
     metadata_path = tmp_path / 'metadata.csv'
     pd.DataFrame(
         {
@@ -270,6 +293,8 @@ def test_prepare_images_main_executes_pipeline(monkeypatch: pytest.MonkeyPatch, 
             'dataset': ['id001'],
         }
     ).to_csv(metadata_path, index=False)
+    model_path = tmp_path / 'dummy_model.keras'
+    model_path.touch()
 
     cfg = {
         'prepare_images': {
@@ -289,15 +314,47 @@ def test_prepare_images_main_executes_pipeline(monkeypatch: pytest.MonkeyPatch, 
             'ratio_growth': 1,
             'model_dir': 'models',
             'model_prototype': '*.keras',
+            'modulo': 1,
             'scaling': 'min_max',
+            'output_dpi': 100,
+            'checkpoint_info_filename': 'checkpoint_info.json',
+            'data_alias_enriched_hex': 'data_alias',
+            'model_alias_hex': 'model_alias',
+            'max_workers': 1,
+            'data_kwargs': {
+                'ratio_initial': 2,
+                'ratio_count': 1,
+                'ratio_growth': 1,
+                'type_of_image': 'SCI',
+                'log_domain_clip_max': 100.0,
+                'model_alias_hex': 'model_alias',
+            },
         }
     }
 
-    monkeypatch.setattr(prep_images_mod, 'parse_config_overrides', lambda: {})
+    monkeypatch.setattr(prep_images_mod, 'parse_config_overrides', lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        prep_images_mod,
+        'parse_runtime_selector_cli_args',
+        lambda *args, **kwargs: {
+            'index': 0,
+            'concurrent_workers': 1,
+            'data_alias_enriched_hex': None,
+            'model_alias_hex': 'model_alias',
+            'epoch': None,
+            'cursor': 1,
+        },
+    )
     monkeypatch.setattr(prep_images_mod, 'load_config', lambda **kwargs: cfg)
-    monkeypatch.setattr(prep_images_mod, 'find_best_performing_models', lambda *args, **kwargs: 'dummy_model.keras')
+    monkeypatch.setattr(
+        prep_images_mod,
+        'find_best_performing_models',
+        lambda *args, **kwargs: {'models': pd.DataFrame({'filepath': [str(model_path)], 'epoch': ['001']})},
+    )
     monkeypatch.setattr(prep_images_mod, 'read_checkpoint_info', lambda *_: {'scaling': 'min_max'})
     monkeypatch.setattr(prep_images_mod, 'load_checkpoint_model', lambda *args, **kwargs: object())
+    monkeypatch.setattr(prep_images_mod, 'ProcessPoolExecutor', lambda max_workers=1: _FakeExecutor())
+    monkeypatch.setattr(prep_images_mod, 'as_completed', lambda futures: futures)
 
     calls = {'plot': 0, 'detect': 0}
 
@@ -346,18 +403,21 @@ def test_mast_main_fetch_resolve_and_download(monkeypatch: pytest.MonkeyPatch, t
             'resolve_urls': True,
             'prefer_token': 'drz',
             'save_dir': str(save_dir),
+            'query_limit': 5000,
+            'http_timeout_seconds': 15,
+            'min_chunk_size': 1,
         }
     }
 
     base_table = pd.DataFrame({'dataset_id': ['A'], 'exp': [100.0]})
     merged_table = pd.DataFrame({'dataset_id': ['A'], 'exp': [100.0], 'resolved_url': ['https://resolved/A.fits']})
 
-    async def fake_download_images(ids, urls, save_dir, max_requests=5, reset_after=10):
+    async def fake_download_images(ids, urls, save_dir, max_requests=5, reset_after=10, timeout_seconds=30):
         return {'count': len(ids), 'save_dir': save_dir}
 
     monkeypatch.setattr(mast_mod, 'parse_config_overrides', lambda: {})
     monkeypatch.setattr(mast_mod, 'load_config', lambda **kwargs: cfg)
-    monkeypatch.setattr(mast_mod, 'filter_out_mast', lambda mission, filters: base_table.copy())
+    monkeypatch.setattr(mast_mod, 'filter_out_mast', lambda mission, filters, query_limit=5000: base_table.copy())
     monkeypatch.setattr(mast_mod, 'merge_products_with_metadata', lambda *args, **kwargs: merged_table.copy())
     monkeypatch.setattr(mast_mod, 'download_images', fake_download_images)
 
@@ -437,6 +497,7 @@ def test_create_dataset_main_delegates_to_control_flow(monkeypatch: pytest.Monke
             'ps': 64,
             'max_workers': 1,
             'step': 5,
+            'histogram_bins': 30,
             'filter_surveys': True,
             'filter_by_last_name': False,
             'last_name_filter_value': [],
@@ -484,6 +545,15 @@ def test_new_train_main_delegates_to_train_network(monkeypatch: pytest.MonkeyPat
                 'training_history_json_path': 'history.json',
                 'validation_loss_filename': 'val.png',
                 'training_metrics_filename': 'train.png',
+                'checkpoint_info_filename': 'checkpoint_info.json',
+                'cpu_max_batch_size': 1,
+                'counter_initial_value': 0,
+                'data_kwargs': {
+                    'training_path': 'train',
+                    'eval_path': 'eval',
+                    'results_path': 'results',
+                    'log_domain_clip_max': 100.0,
+                },
             }
         }
     }

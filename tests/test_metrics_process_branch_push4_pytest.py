@@ -181,7 +181,7 @@ def test_process_models_parallel_future_exception_path(tmp_path: Path, monkeypat
 
 @pytest.mark.unit
 def test_compare_images_wrap_extract_plot_sep_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    def fake_extract(image, flag, kwargs):
+    def wrap_extract_sources(image, flag, kwargs):
         x = np.array([1.0, 2.0], dtype=float)
         y = np.array([1.0, 2.0], dtype=float)
         flux = np.array([10.0, 20.0], dtype=float)
@@ -199,9 +199,9 @@ def test_compare_images_wrap_extract_plot_sep_branch(tmp_path: Path, monkeypatch
     called = {'n': 0}
     monkeypatch.setattr(metrics_mod, 'plot_source_comparison_sep', lambda *args, **kwargs: called.__setitem__('n', called['n'] + 1))
 
-    monkeypatch.setattr(metrics_mod, 'wrap_extract_sources', fake_extract)
+    monkeypatch.setattr(metrics_mod, 'wrap_extract_sources', wrap_extract_sources)
     kwargs = {
-        'func': fake_extract,
+        'func': wrap_extract_sources,
         'distance_threshold': 5.0,
         'alpha': 1.0,
         'beta': 1.0,

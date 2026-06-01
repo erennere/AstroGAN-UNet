@@ -297,6 +297,18 @@ def test_augment_samples_based_on_range_respects_bounds_and_handles_invalid_sigm
 
 
 @pytest.mark.unit
+def test_augment_samples_based_on_range_accepts_numpy_float_controls():
+    sigma = 8.867387668414e-4
+    out = _augment_samples_based_on_range(
+        sigma,
+        lowest_power=np.float64(-4.0),
+        highest_power=np.float64(2.0),
+        n_samples_per_magnitude=np.float64(3.0),
+    )
+    assert isinstance(out, list)
+
+
+@pytest.mark.unit
 def test_load_model_raises_when_best_and_last_requested_together(tmp_path: Path):
     with pytest.raises(ValueError):
         load_model(
