@@ -1641,7 +1641,7 @@ def load_config(
 ) -> dict[str, Any]:
     """Load config, apply overrides, normalize templates, and resolve script sections."""
     # Keep explicit mapping so override parameters are visibly consumed.
-    override_inputs = {
+    raw_override_inputs = {
         'nsigma': nsigma,
         'footprint_radius': footprint_radius,
         'npixels': npixels,
@@ -1659,6 +1659,7 @@ def load_config(
         'filter_by_last_name': filter_by_last_name,
         'last_name_filter_value': last_name_filter_value,
     }
+    override_inputs = _coerce_override_values(raw_override_inputs)
     path = Path(config_path) if config_path is not None else CONFIG_PATH
 
     config_text = path.read_text(encoding='utf-8')

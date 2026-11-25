@@ -1649,12 +1649,14 @@ def condition(model_info, kwargs):
             epoch_mask = mask & (model_info['epoch'] == kwargs['epoch'])
             if epoch_mask.any():
                 return epoch_mask
+            return pd.Series(False, index=model_info.index)
         else:
             first_matches = np.flatnonzero(mask.to_numpy())
             if first_matches.size:
                 first_only_mask = pd.Series(False, index=model_info.index)
                 first_only_mask.iloc[first_matches[0]] = True
                 return first_only_mask
+            return pd.Series(False, index=model_info.index)
 
     return model_info['data_alias_enriched_hex'] == data_alias_enriched_hex
 

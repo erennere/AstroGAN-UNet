@@ -38,7 +38,7 @@ FP_RADIUS=(                       ""        10     10     10     )
 NPIXELS=(                         ""        8      8      8      )
 FILTER_SURVEYS=(                  ""        true   true   true   )
 FILTER_BY_LAST_NAME=(             ""        false  true   true   )
-LAST_NAME_FILTER=(                ""        ""     ""     MOMCHEVA )
+LAST_NAME_FILTER=(                ""        ""     FABER  MOMCHEVA )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Explicit runtime values (no auto-detection)

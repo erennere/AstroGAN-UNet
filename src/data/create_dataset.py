@@ -446,16 +446,21 @@ def test_train_validation_split(dataset_metadata, url_column, split=(60, 20, 20)
         return
 
     data = dataset_metadata[url_column].to_numpy()
-    np.random.shuffle(data)
 
     total_len = len(data)
+    if total_len == 0:
+        logging.warning('test_train_validation_split received empty dataset metadata; returning empty splits.')
+        empty = np.array([], dtype=data.dtype if hasattr(data, 'dtype') else object)
+        return empty, empty, empty
+
     test_size = total_len * split[1] // 100
     val_size = total_len * split[2] // 100
 
-    test_indices = np.random.choice(np.arange(total_len), size=test_size, replace=False)
-    rest_indices = [i for i in range(total_len) if i not in test_indices]
-    val_indices = np.random.choice(rest_indices, size=val_size, replace=False)
-    train_indices = [i for i in range(total_len) if i not in test_indices and i not in val_indices]
+    # Use one shuffled integer index array to keep indexing type-safe for all edge cases.
+    shuffled_indices = np.random.permutation(total_len).astype(int)
+    test_indices = shuffled_indices[:test_size]
+    val_indices = shuffled_indices[test_size:test_size + val_size]
+    train_indices = shuffled_indices[test_size + val_size:]
     logging.info(
         'Train/test/val split: %d / %d / %d (total=%d, split=%s)',
         len(train_indices), len(test_indices), len(val_indices), total_len, split,
@@ -854,6 +859,9 @@ def control_flow(dataset_dir, metadata_filepath, survey_column, exp_column, id_c
         # Reload the filtered metadata CSV (written in phase 1) and attach the
         # per-image stats collected above via a left-join on the filename column.
         noise_attributes = pd.DataFrame(noise_attributes)
+        if filename_column not in noise_attributes.columns:
+            # Keep merge contract stable when no original-image stats were produced.
+            noise_attributes[filename_column] = pd.Series(dtype='object')
         filtered_metadata = pd.read_csv(filtered_metadata_output_file)
         # Derive the bare filename from the URL (URL-encoded path, split on token).
         filtered_metadata[filename_column] = filtered_metadata[url_column].apply(
@@ -880,6 +888,9 @@ def control_flow(dataset_dir, metadata_filepath, survey_column, exp_column, id_c
             )
             return
         cropped_image_attributes = pd.DataFrame(cropped_image_attributes)
+        if original_filename_column not in cropped_image_attributes.columns:
+            # Keep merge contract stable when no crop-level stats were produced.
+            cropped_image_attributes[original_filename_column] = pd.Series(dtype='object')
 
         # Reload baseline filtered metadata and map each row to its original filename
         # so it can be joined with the noisy (original-image) stats below.

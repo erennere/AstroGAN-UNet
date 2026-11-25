@@ -55,7 +55,45 @@ require_aun_env_active() {
 enter_aun_src() {
     init_aun_paths
     cd "${AUN_PROJECT_ROOT}/src"
+
+    if [[ ! -f "${AUN_PROJECT_ROOT}/src/starter.py" ]]; then
+        echo "ERROR: Missing required file ${AUN_PROJECT_ROOT}/src/starter.py"
+        exit 1
+    fi
+    if [[ ! -f "${AUN_PROJECT_ROOT}/src/config_parsing.py" ]]; then
+        echo "ERROR: Missing required file ${AUN_PROJECT_ROOT}/src/config_parsing.py"
+        exit 1
+    fi
+
     export PYTHONPATH="${AUN_PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+
+    python - <<'PY'
+import inspect
+import os
+
+import starter
+import config_parsing
+
+starter_file = os.path.abspath(inspect.getfile(starter)).replace('\\', '/')
+config_parsing_file = os.path.abspath(inspect.getfile(config_parsing)).replace('\\', '/')
+
+if not starter_file.endswith('/src/starter.py'):
+    raise SystemExit(
+        f"ERROR: starter resolved to {starter_file}, expected .../src/starter.py"
+    )
+
+if not config_parsing_file.endswith('/src/config_parsing.py'):
+    raise SystemExit(
+        f"ERROR: config_parsing resolved to {config_parsing_file}, expected .../src/config_parsing.py"
+    )
+
+required_starter_symbols = ('load_config', 'parse_config_overrides', '_decode_models_dir')
+missing = [name for name in required_starter_symbols if not hasattr(starter, name)]
+if missing:
+    raise SystemExit(
+        f"ERROR: {starter_file} is missing required symbols: {', '.join(missing)}"
+    )
+PY
 }
 
 
@@ -133,4 +171,92 @@ init_aun_runtime_selectors() {
     : "${AUN_DATA_ALIAS_HEX:=eNpzYWRl-M_AxMDFwAEAClcBXg}"
     : "${AUN_MODEL_ALIAS_HEX:=null}"
     : "${AUN_EPOCH_SELECTOR:=null}"
+}
+
+
+assert_last_name_scenario_matches_training_matrix() {
+    local attention="$1"
+    local loss="$2"
+    local filter_by_last_name="$3"
+    local last_name_filter_value="$4"
+    local data_alias_selector="$5"
+    local model_alias_selector="$6"
+
+    python - "${attention}" "${loss}" "${filter_by_last_name}" "${last_name_filter_value}" "${data_alias_selector}" "${model_alias_selector}" <<'PY'
+import sys
+import starter
+
+attention = sys.argv[1]
+loss = sys.argv[2]
+filter_by_last_name = sys.argv[3]
+last_name_filter_value = sys.argv[4]
+data_alias_selector = sys.argv[5]
+model_alias_selector = sys.argv[6]
+
+CANONICAL_ATTENTION = ('true', 'false')
+CANONICAL_LOSS = ('scale_invariant_mae', 'log_cosh_loss')
+CANONICAL_DATA = (
+    ('false', ''),
+    ('true', 'FABER'),
+    ('true', 'MOMCHEVA'),
+)
+
+expected = {}
+for attn in CANONICAL_ATTENTION:
+    for loss_name in CANONICAL_LOSS:
+        for data_filter, data_last_name in CANONICAL_DATA:
+            kwargs = {
+                'nsigma': '2',
+                'footprint_radius': '10',
+                'npixels': '8',
+                'model_type': 'unet',
+                'attention': attn,
+                'scaling': 'z_scale',
+                'loss_name': loss_name,
+                'filter_surveys': 'true',
+                'filter_by_last_name': data_filter,
+            }
+            if data_filter == 'true':
+                kwargs['last_name_filter_value'] = data_last_name
+
+            cfg = starter.load_config(**kwargs)
+            data_alias = cfg['metrics']['data_kwargs']['kwargs_data']['data_alias_enriched_hex']
+            model_alias = cfg['metrics']['data_kwargs']['kwargs_data']['model_alias_hex']
+            if not data_alias or not model_alias:
+                raise SystemExit(
+                    f'ERROR: failed to resolve aliases for canonical scenario '
+                    f'attn={attn} loss={loss_name} filter_by_last_name={data_filter} '
+                    f'last_name={data_last_name or "off"}.'
+                )
+
+            key = (attn, loss_name, data_filter, data_last_name)
+            if key in expected:
+                raise SystemExit(f'ERROR: duplicate canonical key generated: {key}')
+            expected[key] = (data_alias, model_alias)
+
+if len(expected) != 12:
+    raise SystemExit(f'ERROR: canonical scenario size mismatch: expected 12, got {len(expected)}')
+
+input_key = (
+    attention,
+    loss,
+    filter_by_last_name,
+    last_name_filter_value if filter_by_last_name == 'true' else '',
+)
+
+if input_key not in expected:
+    raise SystemExit(
+        f'ERROR: scenario not in canonical training matrix: '
+        f'attn={attention} loss={loss} filter_by_last_name={filter_by_last_name} '
+        f'last_name={last_name_filter_value or "off"}'
+    )
+
+expected_data_alias, expected_model_alias = expected[input_key]
+if expected_data_alias != data_alias_selector or expected_model_alias != model_alias_selector:
+    raise SystemExit(
+        'ERROR: selector mismatch against canonical training matrix. '
+        f'Expected data_alias={expected_data_alias} model_alias={expected_model_alias}; '
+        f'got data_alias={data_alias_selector} model_alias={model_alias_selector}'
+    )
+PY
 }

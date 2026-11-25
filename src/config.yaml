@@ -12,7 +12,7 @@ paths:
   fit_info_csv: "{data_dir}/fit_info_{data_alias_enriched_hex}.csv"
   models_dir: "../models"
   plots_dir: "../plots"
-  multimodal_metrics_dir: "../metrics/cropped_modal"
+  multimodal_metrics_dir: "../metrics/cropped_modal_last_names"
   singlemodal_metrics_dir: "../metrics/uncropped_modal"
 
 mast:
