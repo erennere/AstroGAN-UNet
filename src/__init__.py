@@ -1,2 +1,0 @@
-"""AstroGAN-UNet source package."""
-

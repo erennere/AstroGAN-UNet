@@ -1,0 +1,71 @@
+# The whole workflow on a synthetic sky, CPU, a few minutes:  astrounets smoke
+base: default.yaml
+
+paths:
+  data: smoke/data
+  runs: smoke/runs
+
+mast:
+  mock: true
+  mock_images: 24
+  mock_image_size: 256
+  download_workers: 2
+
+dataset:
+  name: mock
+  apertures: []
+  exposure_min: 100.0
+  max_images: null
+  patch_size: 64
+  min_valid_fraction: 0.8
+  bkg_box_size: 32
+  workers: 2
+
+datasets:
+  mock: {pi_names: []}
+  mock-faber: {pi_names: [FABER]}
+
+model:
+  depth: 3
+  filters: 8
+
+gan:
+  disc_filters: 8
+  disc_layers: 2
+
+train:
+  epochs: 2
+  batch_size: 8
+  samples_per_epoch: 64
+  val_samples: 16
+  lr_drops: [0.5]
+  preview_every: 1
+  preview_samples: 2
+  loader_workers: 2
+
+eval:
+  n_crops: 12
+  ratios: [2, 8, 32]
+  batch_size: 8
+  bkg_box_size: 32
+  n_examples: 3
+
+ranking:
+  guard: false             # two-epoch models never beat the noisy input; rank them anyway
+
+workflow:
+  models:
+    set: {}
+    grid:
+      model.type: [unet, gan]
+    evaluate: [own:val]
+  tune:
+    top: 1
+    learning_rates: [0.0002, 0.0005]
+    max_epochs: 3
+    patience: 1
+    epoch_margin: 1.2
+    min_epochs: 1
+  datasets:
+    train_on: [mock, mock-faber]
+    evaluate: [mock:test, mock-faber:test]

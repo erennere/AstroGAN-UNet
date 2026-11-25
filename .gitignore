@@ -1,10 +1,10 @@
 /.venv/
-/.venv-wsl/
 /.vscode/
-__pycache__/
-*.py[cod]
-.ipynb_checkpoints/
 /data/
-/models/
-/histograms/
-/notebooks/
+/runs/
+/smoke/
+/pilot/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.snakemake/

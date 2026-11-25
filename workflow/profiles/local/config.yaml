@@ -1,0 +1,7 @@
+# Local profile: every job runs on this machine, one at a time (each job uses its own threads,
+# see dataset.workers and train.loader_workers).
+cores: 1
+keep-going: true          # a failed run does not stop the others; start again to retry it
+rerun-incomplete: true    # jobs cut off by a stop or crash are run again (training resumes)
+rerun-triggers: [mtime]
+latency-wait: 5

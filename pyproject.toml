@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astrounets"
+version = "1.0.0"
+description = "U-Net / GAN denoising of HST WFC3/IR images: data, training, evaluation, a Snakemake workflow."
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "numpy==2.4.6",
+    "pandas==3.1.1",
+    "pyarrow==26.0.1",
+    "scipy==1.17.1",
+    "astropy==8.0.3",
+    "photutils==3.0.0",
+    "sep==1.4.1",
+    "astroquery==0.4.11",
+    "aiohttp==3.14.5",
+    "matplotlib==3.11.2",
+    "PyYAML==6.0.4",
+    "psutil==7.2.2",
+    "snakemake==9.27.2",
+    "snakemake-executor-plugin-slurm==2.8.0",
+]
+
+[project.optional-dependencies]
+cpu = ["tensorflow==2.20.0"]
+gpu = ["tensorflow[and-cuda]==2.20.0"]
+dev = ["pytest==9.2.0"]
+
+[project.scripts]
+astrounets = "astrounets.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = ["slow: end-to-end workflow runs (local and fake SLURM); about two minutes each"]
+filterwarnings = ["ignore::DeprecationWarning"]

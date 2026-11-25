@@ -1,0 +1,23 @@
+# SLURM profile for bwForCluster Helix: every run is its own GPU job, datasets are CPU jobs,
+# fetch and the summaries run where the workflow runs (the login node, which has internet).
+executor: slurm
+jobs: 10                  # at most this many SLURM jobs at once
+keep-going: true
+rerun-incomplete: true
+rerun-triggers: [mtime]
+retries: 2                # a job that hits the time limit or crashes is resubmitted and resumes
+latency-wait: 120         # shared file system: wait this long for a finished job's files
+slurm-keep-successful-logs: true   # SLURM logs: runs/_workflow/.snakemake/slurm_logs
+default-resources:
+  slurm_partition: cpu-single
+  runtime: 600            # minutes
+  mem_mb: 64000
+  cpus_per_task: 16
+  # slurm_account: ""     # set if your Helix project needs an explicit account
+set-resources:
+  job:
+    slurm_partition: gpu-single
+    gres: "gpu:A40:1"
+    runtime: 2880         # 48 hours
+    mem_mb: 64000
+    cpus_per_task: 16

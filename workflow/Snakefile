@@ -1,0 +1,74 @@
+# astroUnets workflow. Start it with `astrounets workflow` (it picks the profile, runs in the
+# background and continues where it stopped); the stages are described in src/astrounets/workflow.py.
+#
+#   fetch -> dataset (once per name) -> models runs -> ranking -> tune runs -> choice
+#         -> datasets runs -> results
+#
+# Every run is one job: train (resuming from its checkpoint), evaluate, plot. All paths are
+# absolute; Snakemake's own files (.snakemake/, SLURM logs) live in runs/_workflow.
+from astrounets import workflow as wf
+from astrounets.config import load_config
+
+CONFIG = config["astrounets_config"]
+cfg = load_config(CONFIG)
+plan = wf.Plan(cfg)
+WDIR = wf.workflow_dir(cfg).as_posix()
+MAST = cfg.mast_dir.as_posix()
+DATA = cfg.data_dir.as_posix()
+
+wildcard_constraints:
+    stage="models|tune|datasets",
+    dataset="[a-z0-9][a-z0-9_-]*",
+    run="[^/]+",
+
+# fetch needs the internet (on a cluster it runs on the login node); the summaries take seconds.
+localrules: all, fetch, ranking, choice, results
+
+
+rule all:
+    input: wf.results_path(cfg).as_posix()
+
+
+rule fetch:
+    output: f"{MAST}/metadata.parquet"
+    run: wf.call("fetch", "-c", CONFIG)
+
+
+rule dataset:
+    input: f"{MAST}/metadata.parquet"
+    output: f"{DATA}/{{dataset}}/crops.parquet"
+    run: wf.call("dataset", "-c", CONFIG, "--set", f"dataset.name={wildcards.dataset}")
+
+
+rule job:
+    input: lambda w: plan.job_inputs(w.stage, f"{w.dataset}/{w.run}")
+    output: f"{WDIR}/{{stage}}/done/{{dataset}}/{{run}}.json"
+    run: wf.call("job", "-c", CONFIG, wildcards.stage, f"{wildcards.dataset}/{wildcards.run}")
+
+
+checkpoint ranking:
+    input: lambda w: plan.markers("models")
+    output: wf.ranking_path(cfg).as_posix()
+    run: wf.call("select", "-c", CONFIG, "models")
+
+
+def tune_markers(wildcards):
+    checkpoints.ranking.get()
+    return plan.markers("tune")
+
+
+checkpoint choice:
+    input: tune_markers
+    output: wf.choice_path(cfg).as_posix()
+    run: wf.call("select", "-c", CONFIG, "tune")
+
+
+def datasets_markers(wildcards):
+    checkpoints.choice.get()
+    return plan.markers("datasets")
+
+
+rule results:
+    input: datasets_markers
+    output: wf.results_path(cfg).as_posix()
+    run: wf.call("select", "-c", CONFIG, "datasets")

@@ -1,0 +1,174 @@
+# astroUnets configuration. Every value is written out; nothing is filled in by code.
+# Relative paths resolve against the repository root.
+# Run the whole study:   astrounets workflow        (progress: astrounets status)
+# Override anything on the command line:  --set train.epochs=5 --set model.attention=false
+
+seed: 42
+
+paths:
+  data: data              # data/mast (downloads, metadata) and data/<dataset.name> (crop tables)
+  runs: runs              # runs/<dataset.name>/<run_name>-<hash8>/ and runs/_workflow/
+  node_scratch: true      # inside a SLURM job, copy the images a job reads to the node's $TMPDIR first
+
+# ---- fetch: one MAST query shared by every dataset ---------------------------------------------
+mast:
+  mock: false             # true = write a synthetic sky instead of querying MAST (smoke runs, tests)
+  mock_images: 0          # number of synthetic images when mock is true
+  mock_image_size: 0      # pixels per side of each synthetic image
+  mission: hst
+  query:                  # MastMissions criteria
+    sci_spec_1234: "F160W,F160W;*,*;F160W,*;F160W;*"
+    sci_obs_type: image
+    sci_aec: S
+    sci_instrume: wfc3
+  columns:                # MAST column -> pipeline name
+    id: sci_data_set_name
+    exposure: sci_actual_duration
+    ra: sci_ra
+    dec: sci_dec
+    aperture: sci_aper_1234
+    pi: sci_pi_last_name
+    target: sci_targname
+  page_size: 5000
+  product_suffix: drz.fits
+  resolve_chunk: 500
+  retries: 3
+  download: true
+  download_limit: null     # null = every image; a number = a small subset spread over splits and tiles
+  download_workers: 8
+  http_timeout: 300.0
+  tile_arcmin: 20.0        # the sky is cut into tiles of this size; whole tiles go to train, val or test
+  overlap_arcmin: 3.1      # val/test images whose centre is this close to an image of an earlier split
+                           # are dropped ("buffer"), so no sky appears in two splits (WFC3/IR: 2.05' x 2.27')
+  split:                   # share of images per split
+    train: 60
+    val: 20
+    test: 20
+
+# ---- dataset: which images to use and how they are cut ------------------------------------------
+dataset:
+  name: all                # one of `datasets` below; also the folder name under data/ and runs/
+  apertures: [IR, IR-FIX, IR-UVIS-CENTER, IR-UVIS-FIX, GRISM1024, IR-UVIS, G141-REF, G102-REF]  # [] = any
+  exposure_min: 200.0
+  exposure_max: 20000.0
+  max_images: null         # null = all selected images
+  filter: F160W            # images whose FILTER header differs are skipped
+  hdu: SCI
+  patch_size: 256
+  min_valid_fraction: 0.9  # crops with more empty (0 / NaN) pixels are dropped
+  bkg_box_size: 64
+  bkg_filter_size: 3
+  bkg_sigma: 3.0
+  bkg_exclude_percentile: 50.0
+  workers: 8
+
+datasets:                  # named image selections; each entry completes the dataset section above
+  all: {pi_names: []}      # [] = every PI
+  faber: {pi_names: [FABER]}
+  momcheva: {pi_names: [MOMCHEVA]}
+
+# ---- noise: how a shorter exposure is simulated -------------------------------------------------
+# noisy = clean + N(0, sigma * sqrt(ratio - 1)),  sigma = measured pixel noise of the crop
+noise:
+  ratio_min: 1.5
+  ratio_max: 100.0
+  min_new_exposure: 60.0   # seconds; caps the ratio per image
+
+scaling:
+  mode: z_scale            # none | z_scale | min_max | log_min_max   (fitted on the noisy input)
+  log_clip_max: 80.0
+
+model:
+  type: unet               # unet | gan
+  depth: 5
+  filters: 64
+  growth: 2
+  kernel_size: 3
+  pool_size: 2
+  block_depth: 2
+  batch_norm: true
+  dropout: 0.2
+  dropout_from_layer: 1
+  attention: true
+  activation: leakyrelu    # leakyrelu | relu | elu | gelu
+  output_activation: none  # none | sigmoid
+  initializer: he_normal
+  use_bias: false
+
+gan:                       # used when model.type is gan: conditional PatchGAN discriminator
+  disc_filters: 64
+  disc_layers: 3
+  d_lr_ratio: 1.0          # discriminator learning rate = this x generator learning rate
+  adversarial_weight: 1.0
+  reconstruction_weight: 100.0
+  label_smoothing: 0.05
+
+train:
+  epochs: 60
+  batch_size: 64
+  samples_per_epoch: 30000
+  val_samples: 512         # fixed validation set, identical every epoch
+  loss: log_cosh           # log_cosh | simae | mae | mse | ssim
+  beta_1: 0.5
+  learning_rate: 0.0002    # generator; the workflow's tune stage picks it per setup for stage 2
+  lr_drops: [0.75]         # after these fractions of the epochs the rate is multiplied by lr_drop_factor
+  lr_drop_factor: 0.5
+  patience: null           # stop after this many epochs without a better validation loss (null = never)
+  augment: true            # random 90-degree rotations and flips
+  preview_every: 10
+  preview_samples: 4
+  loader_workers: 8
+  resume: true
+
+eval:
+  split: test              # val for model selection, test for final numbers
+  n_crops: 500
+  ratios: [2, 4, 8, 16, 32, 64]
+  batch_size: 32
+  detect_nsigma: 2.25      # one absolute threshold per sample: nsigma * noise of the noisy image
+  detect_minarea: 8
+  bkg_box_size: 64
+  deblend_nthresh: 32
+  deblend_cont: 0.005
+  kron_radius_factor: 6.0
+  kron_factor: 2.5
+  min_radius: 1.75
+  match_radius: 3.0
+  mag_bins: [20, 21, 22, 23, 24, 25, 26, 27, 28]
+  n_examples: 8
+
+plots:
+  dpi: 150
+
+ranking:                   # stage-1 ranking: weighted mean of per-measure ranks
+  guard: true              # rank only runs that find at least as many real sources, and no more fake
+                           # ones, than the noisy input (completeness and purity not below the noisy input)
+  weights:
+    flux_scatter: 1.0
+    flux_bias: 1.0
+    ssim: 1.0
+    radius_error: 0.5
+    ellipticity_error: 0.5
+
+# ---- workflow: the study, run by `astrounets workflow` ------------------------------------------
+# Cluster resources (partition, GPU, time, parallel jobs) live in workflow/profiles/slurm/config.yaml.
+workflow:
+  models:                  # stage 1: which setup works best? every valid combination, on dataset.name
+    set:                   # applies to stage 1 only: shorter training is enough to rank
+      train.epochs: 20
+    grid:                  # ssim loss needs min_max or log_min_max scaling: 8 combinations are skipped
+      model.type: [unet, gan]
+      model.attention: [false, true]
+      scaling.mode: [none, z_scale, min_max, log_min_max]
+      train.loss: [log_cosh, simae, mae, ssim]
+    evaluate: [own:val]    # ranked on the validation split
+  tune:                    # learning rate and epochs for the best setups
+    top: 3                 # how many stage-1 setups go on
+    learning_rates: [0.0001, 0.0002, 0.0005]
+    max_epochs: 100        # tuning runs use a constant rate and stop after `patience` epochs without
+    patience: 10           # a better validation loss
+    epoch_margin: 1.2      # stage-2 epochs = margin x the epoch with the best validation loss,
+    min_epochs: 20         # kept within min_epochs and max_epochs
+  datasets:                # stage 2: every tuned setup trained on each dataset, tested on all
+    train_on: [all, faber, momcheva]
+    evaluate: [all:test, faber:test, momcheva:test]
