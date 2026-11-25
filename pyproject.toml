@@ -21,7 +21,8 @@ dependencies = [
     "PyYAML==6.0.4",
     "psutil==7.2.2",
     "snakemake==9.27.2",
-    "snakemake-executor-plugin-slurm==2.8.0",
+    # SLURM only exists on Linux clusters; on Windows the plugin breaks Snakemake at start-up
+    "snakemake-executor-plugin-slurm==2.8.0; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
