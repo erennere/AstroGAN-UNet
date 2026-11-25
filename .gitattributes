@@ -1,0 +1,9 @@
+# Line endings: LF in the repository and in working copies (Windows tools read LF fine),
+# so Linux checkouts on the cluster get runnable shell scripts. PowerShell scripts keep CRLF.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.fits binary
+*.keras binary
+*.parquet binary
+*.png binary
+*.npz binary
