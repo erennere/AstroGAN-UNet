@@ -41,6 +41,9 @@ if (-not (Test-Path .venv\Scripts\python.exe)) {
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 & .\.venv\Scripts\python.exe -m pip install -e ".[cpu,dev]"
 if ($LASTEXITCODE -ne 0) { throw "installing astrounets failed" }
+# The SLURM plugin is Linux-only and stops Snakemake from starting on Windows; remove it if an
+# earlier install put it here.
+& .\.venv\Scripts\python.exe -m pip uninstall -y -q snakemake-executor-plugin-slurm snakemake-executor-plugin-slurm-jobstep
 & .\.venv\Scripts\astrounets.exe --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "the astrounets command does not start" }
 Write-Host "Done. Activate with: .\.venv\Scripts\Activate.ps1"
