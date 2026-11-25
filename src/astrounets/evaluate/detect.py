@@ -27,12 +27,17 @@ def measure(image: np.ndarray, threshold: float, e: Eval) -> pd.DataFrame:
         return pd.DataFrame(columns=COLUMNS)
     if len(objects) == 0:
         return pd.DataFrame(columns=COLUMNS)
+    objects = objects[np.isfinite(objects["x"]) & np.isfinite(objects["y"])]
     x, y = objects["x"].astype(float), objects["y"].astype(float)
-    a, b, theta = objects["a"].astype(float), objects["b"].astype(float), objects["theta"].astype(float)
-    a, b = np.maximum(a, 1e-3), np.maximum(b, 1e-3)
+    a, b = objects["a"].astype(float), objects["b"].astype(float)
+    # SEP stores theta as float32: +-pi/2 in float32 lies just outside SEP's own float64 range check
+    theta = np.clip(objects["theta"].astype(float), -np.pi / 2, np.pi / 2)
+    shape_ok = np.isfinite(a) & np.isfinite(b) & np.isfinite(theta) & (a > 0) & (b > 0)
+    a, theta = np.where(shape_ok, a, 1.0), np.where(shape_ok, theta, 0.0)
+    b = np.where(shape_ok, np.minimum(b, a), 1.0)
     kron, _ = sep.kron_radius(sub, x, y, a, b, theta, e.kron_radius_factor)
     kron = np.where(np.isfinite(kron) & (kron > 0), kron, 0.0)
-    use_circle = kron * np.sqrt(a * b) < e.min_radius
+    use_circle = ~shape_ok | (kron * np.sqrt(a * b) < e.min_radius)  # degenerate shapes: circular aperture
     flux = np.zeros(len(x))
     if (~use_circle).any():
         k = ~use_circle
@@ -41,5 +46,6 @@ def measure(image: np.ndarray, threshold: float, e: Eval) -> pd.DataFrame:
         k = use_circle
         flux[k], _, _ = sep.sum_circle(sub, x[k], y[k], e.min_radius, subpix=1)
     radius, _ = sep.flux_radius(sub, x, y, e.kron_radius_factor * a, 0.5, normflux=np.where(flux > 0, flux, np.nan), subpix=5)
+    a, b = np.where(shape_ok, a, np.nan), np.where(shape_ok, b, np.nan)
     return pd.DataFrame({"x": x, "y": y, "flux": flux, "a": a, "b": b, "theta": theta,
                          "radius": radius, "ellipticity": 1.0 - b / a})

@@ -34,6 +34,31 @@ def test_detection_recovers_injected_sources(cfg):
     assert np.median(ratio[bright.to_numpy()[i_true]]) == pytest.approx(1.0, abs=0.1)  # Kron flux ~ total flux
 
 
+def test_degenerate_sep_shapes_do_not_break_photometry(cfg, monkeypatch):
+    """Real data gave theta = float32(pi/2), just above SEP's float64 limit, and SEP can return NaN or
+    zero axes; such sources are measured with a circular aperture instead of crashing the evaluation."""
+    import sep
+
+    import astrounets.evaluate.detect as detect
+
+    rng = np.random.default_rng(4)
+    image, sigma, catalog = make_image(rng, 128, 5000.0, n_sources=6, border=False)
+    real = sep.extract
+    edge = np.float32(np.pi / 2)
+
+    def odd_extract(*args, **kwargs):
+        objects = real(*args, **kwargs).copy()
+        objects["theta"][0], objects["theta"][1] = edge, -edge
+        objects["a"][2], objects["b"][3] = np.nan, 0.0
+        objects["x"][4] = np.nan
+        return objects
+
+    monkeypatch.setattr(detect.sep, "extract", odd_extract)
+    found = measure(image, 3 * sigma, cfg.eval)
+    assert len(found) >= 4 and found["x"].notna().all() and np.isfinite(found["flux"]).all()
+    assert found["ellipticity"].isna().sum() == 2  # the NaN-axis and zero-axis sources have no shape
+
+
 def test_perfect_reconstruction_scores_perfectly(cfg):
     rng = np.random.default_rng(6)
     clean, sigma, _ = make_image(rng, 128, 2500.0, n_sources=8, border=False)

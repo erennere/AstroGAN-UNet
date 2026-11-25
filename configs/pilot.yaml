@@ -1,5 +1,6 @@
-# Real-data pilot on a laptop: the whole workflow on 24 real HST images with small, short runs.
-#   astrounets workflow -c configs/pilot.yaml --foreground      (about 20 minutes on a CPU)
+# Real-data pilot on a laptop: the whole workflow on 24 real HST images with tiny, short runs.
+#   astrounets workflow -c configs/pilot.yaml      (about 30 minutes on a laptop CPU)
+# The models are far too small and short to denoise well; the pilot checks that everything runs.
 # Checks the real MAST query and downloads, headers, noise estimates, all three stages, evaluation
 # and plots. Downloads land in data/mast/originals and are reused later; results go to pilot/runs.
 base: default.yaml
@@ -20,18 +21,22 @@ datasets:
 
 model:
   depth: 4
-  filters: 16
+  filters: 8
+
+gan:
+  disc_filters: 16
+  disc_layers: 2
 
 train:
-  epochs: 3
+  epochs: 2
   batch_size: 8
-  samples_per_epoch: 512
-  val_samples: 64
+  samples_per_epoch: 128
+  val_samples: 32
   preview_every: 1
   loader_workers: 4
 
 eval:
-  n_crops: 40
+  n_crops: 20
   ratios: [2, 8, 32]
   batch_size: 8
   n_examples: 6
@@ -45,10 +50,10 @@ workflow:
   tune:
     top: 1
     learning_rates: [0.0002, 0.0005]
-    max_epochs: 4
-    patience: 2
+    max_epochs: 3
+    patience: 1
     epoch_margin: 1.2
-    min_epochs: 2
+    min_epochs: 1
   datasets:
     train_on: [pilot]
     evaluate: [pilot:test]
