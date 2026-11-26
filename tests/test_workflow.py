@@ -6,7 +6,7 @@ import pytest
 from astrounets.config import ConfigError, load_config
 from astrounets.workflow import (Plan, choice_path, choose_tuning, marker_path, progress, rank_table, ranking_path,
                                  stage_runs, write_json)
-from conftest import DEFAULT, SMOKE
+from conftest import DEFAULT, ROOT, SMOKE
 
 
 def _study(tmp_path, *overrides):
@@ -207,3 +207,20 @@ def test_run_lock_takes_over_from_a_dead_holder(tmp_path):
     os.utime(tmp_path / "run.lock", (0, 0))  # its heartbeat stopped long ago
     with run_lock(tmp_path, poll=0.05, stale_after=60):
         pass
+
+
+def test_full_study_fetches_again_after_a_pilot(tmp_path):
+    """A pilot downloads a few images into the shared data/mast; the full study has another download plan,
+    so its fetch marker differs and Snakemake fetches again (downloading only what is missing)."""
+    from astrounets.workflow import fetch_marker
+
+    paths = [f"paths.data={tmp_path / 'data'}", f"paths.runs={tmp_path / 'runs'}"]
+    full = load_config(ROOT / "configs" / "default.yaml", paths)
+    pilot = load_config(ROOT / "configs" / "pilot.yaml", paths)
+    assert fetch_marker(full) != fetch_marker(pilot)
+    assert fetch_marker(full).parent == fetch_marker(pilot).parent == full.mast_dir
+    # settings that do not change what is listed or downloaded keep the marker
+    same = load_config(ROOT / "configs" / "default.yaml", paths + ["mast.download_workers=3", "train.epochs=7"])
+    assert fetch_marker(same) == fetch_marker(full)
+    other = load_config(ROOT / "configs" / "default.yaml", paths + ["datasets.faber.pi_names=[FABER, LOTZ]"])
+    assert fetch_marker(other) != fetch_marker(full)

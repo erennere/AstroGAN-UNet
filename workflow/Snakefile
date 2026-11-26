@@ -29,13 +29,17 @@ rule all:
     input: wf.results_path(cfg).as_posix()
 
 
+# fetch writes data/mast/metadata.parquet; its marker names the download plan, so a config that needs
+# other images (the full study after a pilot) fetches again and its datasets are rebuilt
 rule fetch:
-    output: f"{MAST}/metadata.parquet"
-    run: wf.call("fetch", "-c", CONFIG)
+    output: wf.fetch_marker(cfg).as_posix()
+    run:
+        wf.call("fetch", "-c", CONFIG)
+        wf.mark_fetched(cfg)
 
 
 rule dataset:
-    input: f"{MAST}/metadata.parquet"
+    input: wf.fetch_marker(cfg).as_posix()
     output: f"{DATA}/{{dataset}}/crops.parquet"
     run: wf.call("dataset", "-c", CONFIG, "--set", f"dataset.name={wildcards.dataset}")
 

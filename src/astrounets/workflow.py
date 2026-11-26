@@ -34,14 +34,15 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from astrounets.config import (CROP_GROUPS, Config, ConfigError, RANKING_MEASURES, _deep_merge, dataset_key, from_dict,
-                               parse_overrides, to_dict, with_dataset)
+from astrounets.config import (CROP_GROUPS, Config, ConfigError, RANKING_MEASURES, _deep_merge, dataset_key, fetch_key,
+                               from_dict, parse_overrides, to_dict, with_dataset)
 from astrounets.files import write_csv, write_json
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,18 @@ def choice_path(cfg: Config) -> Path:
 
 def results_path(cfg: Config) -> Path:
     return workflow_dir(cfg) / "datasets" / "results.csv"
+
+
+def fetch_marker(cfg: Config) -> Path:
+    """data/mast/fetched-<key>.json: written when the fetch stage is done for this download plan."""
+    return cfg.mast_dir / f"fetched-{fetch_key(cfg)}.json"
+
+
+def mark_fetched(cfg: Config) -> Path:
+    table = pd.read_parquet(cfg.mast_dir / "metadata.parquet", columns=["id", "path"])
+    return write_json(fetch_marker(cfg), {"key": fetch_key(cfg), "images": int(len(table)),
+                                         "downloaded": int(table["path"].notna().sum()),
+                                         "at": datetime.now().isoformat(timespec="seconds")})
 
 
 def marker_path(cfg: Config, stage: str, key: str) -> Path:

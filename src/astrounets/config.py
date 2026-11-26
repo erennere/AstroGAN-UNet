@@ -521,6 +521,22 @@ def dataset_key(cfg: Config) -> str:
     return _hash({"dataset": dataset, "mast": mast, "seed": data["seed"]})
 
 
+_FETCH_SELECTION = ("apertures", "pi_names", "exposure_min", "exposure_max", "max_images")
+
+
+def fetch_key(cfg: Config) -> str:
+    """Fingerprint of what the fetch stage lists and downloads: the MAST query and split, the download
+    plan and every dataset selection it draws on. A pilot (download_limit) and the full study sharing
+    data/mast have different keys, so the full study fetches again (downloading only what is missing)."""
+    data = _resolved(cfg)
+    mast = {k: v for k, v in data["mast"].items()
+            if k not in ("download_workers", "http_timeout", "retries", "resolve_chunk", "page_size")}
+    selections = {name: {k: v for k, v in asdict(with_dataset(cfg, name).dataset).items() if k in _FETCH_SELECTION}
+                  for name in sorted(cfg.datasets)}
+    own = {k: v for k, v in data["dataset"].items() if k in _FETCH_SELECTION}
+    return _hash({"mast": mast, "datasets": selections, "dataset": own, "seed": data["seed"]})
+
+
 def lr_at(train: Train, epoch: int) -> float:
     """Generator learning rate in (0-based) `epoch`: learning_rate, times lr_drop_factor per passed drop."""
     passed = sum(epoch >= round(f * train.epochs) for f in train.lr_drops)
