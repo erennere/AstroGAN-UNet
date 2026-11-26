@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 
 import numpy as np
@@ -57,7 +58,22 @@ def test_download_subset_is_spread_over_splits_and_tiles(cfg):
     chosen = choose_downloads(table, limited)
     assert chosen["split"].value_counts().to_dict() == {"train": 12, "val": 4, "test": 4}
     assert chosen.groupby("split")["tile"].nunique().to_dict() == {"test": 4, "train": 10, "val": 4}
-    assert len(choose_downloads(table, cfg)) == n
+    unlimited = replace_cfg(cfg, {"dataset": {"apertures": [], "exposure_min": 100.0}})
+    assert len(choose_downloads(table, unlimited)) == n
+
+
+def test_full_download_skips_images_no_dataset_uses(cfg):
+    from astrounets.data.mast import choose_downloads
+
+    table = pd.DataFrame({"id": [f"I{i}" for i in range(6)], "tile": 0,
+                          "exposure": [1000.0, 50.0, 1000.0, 1000.0, 1000.0, 1000.0],
+                          "aperture": ["IR", "IR", "IRSUB64", "IR", "IR", "IR"],
+                          "pi": ["A", "A", "A", "FABER", "B", "A"],
+                          "split": ["train", "train", "train", "val", "test", "buffer"]})
+    full = replace_cfg(cfg, {"dataset": {"apertures": ["IR"], "exposure_min": 100.0}})
+    assert choose_downloads(table, full)["id"].tolist() == ["I0", "I3", "I4"]  # short, wrong aperture, buffer: no
+    only_faber = replace_cfg(full, {"datasets": {name: {"pi_names": ["FABER"]} for name in full.datasets}})
+    assert choose_downloads(table, only_faber)["id"].tolist() == ["I3"]  # no dataset wants the other PIs
 
 
 def test_dataset_uses_every_selected_image(mock_data):
@@ -70,7 +86,37 @@ def test_dataset_uses_every_selected_image(mock_data):
     merged = crops.merge(meta[["id", "split"]], left_on="image_id", right_on="id", suffixes=("", "_image"))
     assert (merged["split"] == merged["split_image"]).all()
     assert (crops["valid_fraction"] >= mock_data.dataset.min_valid_fraction).all()
-    assert crops["sigma"].between(0.005, 0.05).all()
+    assert crops["sigma"].between(0.005, 0.1).all()
+
+
+def test_noise_is_measured_on_empty_sky_and_modelled_in_crowded_fields(mock_data):
+    """Sparse mock images: the noise measured on their empty sky is the injected one. Crowded images
+    (thousands of faint stars): the spread of their pixels is mostly stars; their noise comes from the
+    photon + read noise expectation, scaled by k measured on the sparse crops, and they are marked crowded."""
+    from astrounets.data.mock import MOCK_K, SKY, UNRESOLVED, is_crowded, noise_sigma
+
+    crops = load_crops(mock_data)
+    meta = pd.read_parquet(mock_data.mast_dir / "metadata.parquet").set_index("id")
+    crowded_image = np.array([is_crowded(int(i[4:])) for i in crops["image_id"]])
+    truth = np.array([noise_sigma(meta.loc[i, "exposure"], SKY + UNRESOLVED * c) for i, c in zip(crops["image_id"], crowded_image)])
+    error = crops["sigma"].to_numpy() / truth - 1
+    summary = json.loads((mock_data.dataset_dir() / "summary.json").read_text())
+    assert summary["noise_scale_k"] == pytest.approx(MOCK_K, rel=0.03)
+    assert np.abs(error[~crowded_image]).max() < 0.1 and crops.loc[~crowded_image, "noise_measured"].all()
+    assert not crops.loc[~crowded_image, "crowded"].any()
+    assert crops.loc[crowded_image, "crowded"].mean() > 0.8
+    from_model = crowded_image & ~crops["noise_measured"].to_numpy()
+    assert from_model.sum() > 0.5 * crowded_image.sum() and np.abs(error[from_model]).max() < 0.1
+    assert np.abs(error[crowded_image]).max() < 0.35  # measured ones pass the excess check, so are close
+    assert set(crops.loc[crowded_image, "split"]) == {"train", "val", "test"}
+    # the clipped spread of all pixels (the previous estimate) is far off in a crowded image
+    from astrounets.data.dataset import measure_background
+
+    first = crops[crowded_image].iloc[0]
+    image = read_image(mock_data.mast_dir / first["path"], mock_data.dataset.hdu)
+    _, rms = measure_background(image, mock_data.dataset)
+    old = np.median(rms[np.isfinite(image) & (image != 0)])
+    assert old / noise_sigma(meta.loc[first["image_id"], "exposure"], SKY + UNRESOLVED) > 1.5
 
 
 def test_dataset_split_is_shared_across_datasets(mock_data):
@@ -204,28 +250,6 @@ def test_crop_table_must_match_the_config(mock_data):
         load_crops(mock_data, "mock-faber")
 
 
-def test_node_scratch_copies_images_inside_slurm_jobs(mock_data, tmp_path, monkeypatch):
-    from astrounets.config import replace
-    from astrounets.data.scratch import image_root
-
-    files = sorted(load_crops(mock_data)["path"].unique())[:3]
-    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    assert image_root(mock_data, files) == mock_data.mast_dir, "nothing is copied outside SLURM jobs"
-    monkeypatch.setenv("SLURM_JOB_ID", "42")
-    monkeypatch.setenv("TMPDIR", str(tmp_path))
-    root = image_root(mock_data, files)
-    assert root == tmp_path / "astrounets"
-    for rel in files:
-        assert (root / rel).read_bytes() == (mock_data.mast_dir / rel).read_bytes()
-    assert image_root(mock_data, files) == root  # second call finds the copies
-    off = replace(mock_data, {"paths": {"node_scratch": False}})
-    assert image_root(off, files) == mock_data.mast_dir
-    store = CropStore(root, "SCI")
-    row = load_crops(mock_data).query("path == @files[0]").iloc[0]
-    assert np.array_equal(store.crop(row["path"], row["y"], row["x"], 64),
-                          CropStore(mock_data.mast_dir, "SCI").crop(row["path"], row["y"], row["x"], 64))
-
-
 def test_atomic_write_leaves_nothing_on_failure(tmp_path):
     from astrounets.files import atomic, write_text
 
@@ -236,3 +260,39 @@ def test_atomic_write_leaves_nothing_on_failure(tmp_path):
             tmp.write_text("half")
             1 / 0
     assert target.read_text() == "first" and sorted(p.name for p in target.parent.iterdir()) == ["out.txt"]
+
+
+def test_low_weight_pixels_are_no_data(mock_data):
+    """The mock "death star" (drizzle weight ~0, junk pixel values) must never reach training or evaluation."""
+    from astrounets.data.fits_io import read_weight
+    from astrounets.data.pairs import noisy_pair
+
+    crops = load_crops(mock_data)
+    assert (crops["weight_cut"] > 0).all()
+    image = crops[crops["image_id"] == "MOCK0000"]  # even-numbered mock images have a dead patch
+    weight = read_weight(mock_data.mast_dir / image["path"].iloc[0], "WHT")
+    cut = float(image["weight_cut"].iloc[0])
+    store = CropStore(mock_data.mast_dir, "SCI", "WHT")
+    hit = 0
+    for _, row in image.iterrows():
+        low = weight[row["y"]:row["y"] + 64, row["x"]:row["x"] + 64] < cut
+        masked = store.crop(row["path"], row["y"], row["x"], 64, cut)
+        raw = store.crop(row["path"], row["y"], row["x"], 64)
+        assert (masked[low] == 0).all() and np.array_equal(masked[~low], raw[~low])
+        if low.any() and (raw[low] != 0).any():
+            hit += 1
+            clean, noisy = noisy_pair(store, row.to_dict(), 8.0, 0, 64)
+            assert (noisy[low] == 0).all()
+            assert row["valid_fraction"] <= 1 - low.mean() + 1e-9
+    assert hit >= 1, "the dead patch lies in at least one usable crop"
+
+
+def test_weight_cut_can_be_switched_off(mock_data, tmp_path):
+    from astrounets.data.dataset import image_crops
+
+    meta = pd.read_parquet(mock_data.mast_dir / "metadata.parquet")
+    row = {**meta.iloc[0].to_dict(), "abspath": str(mock_data.mast_dir / meta.iloc[0]["path"])}
+    on, _ = image_crops(row, mock_data.dataset)
+    off, _ = image_crops(row, replace_cfg(mock_data, {"dataset": {"min_weight_fraction": 0.0}}).dataset)
+    assert all(c["weight_cut"] > 0 for c in on) and all(c["weight_cut"] == 0 for c in off)
+    assert sum(c["valid_fraction"] for c in on) < sum(c["valid_fraction"] for c in off)

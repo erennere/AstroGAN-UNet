@@ -58,6 +58,8 @@ def test_types_are_checked():
     (["dataset.pi_names=[FABER]"], "conflicts with datasets.all.pi_names"),
     (["datasets.faber.patch_sizes=3"], "not a dataset setting"),
     (["ranking.weights={speed: 1}"], "unknown measure"),
+    (["ranking.groups={sparse: -1}"], "ranking.groups"),
+    (["ranking.groups={dense: 1}"], "ranking.groups"),
 ])
 def test_impossible_setups_are_rejected(override, message):
     with pytest.raises(ConfigError, match=message):
@@ -117,3 +119,9 @@ def test_learning_rate_drops_at_fractions_of_the_epochs():
     assert rates[:10] == [0.0002] * 10 and rates[10:15] == [0.0001] * 5 and rates[15:] == [0.00005] * 5
     constant = load_config(DEFAULT, ["train.lr_drops=[]"]).train
     assert {lr_at(constant, e) for e in range(60)} == {0.0002}
+
+
+def test_ranking_groups_are_replaced_not_merged():
+    cfg = load_config(DEFAULT, ["ranking.groups={sparse: 1}"])
+    assert cfg.ranking.groups == {"sparse": 1}
+    assert load_config(DEFAULT).ranking.groups == {"sparse": 3.0, "crowded": 1.0}

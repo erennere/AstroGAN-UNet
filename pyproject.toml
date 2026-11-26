@@ -30,6 +30,9 @@ cpu = ["tensorflow==2.20.0"]
 gpu = ["tensorflow[and-cuda]==2.20.0"]
 dev = ["pytest==9.2.0"]
 
+[project.urls]
+Repository = "https://github.com/erennere/AstroGAN-UNet"
+
 [project.scripts]
 astrounets = "astrounets.cli:main"
 

@@ -27,5 +27,6 @@ def smoke(fresh: bool = True, workdir: Path | None = None) -> str:
     if code != 0:
         raise RuntimeError(f"the smoke workflow failed (exit code {code}); see the output above")
     results = pd.read_csv(results_path(load_config(config, overrides)))
-    columns = ["setup", "train_on", "test_on", "flux_scatter", "ssim", "completeness_rec", "completeness_noisy"]
+    columns = ["setup", "train_on", "test_on", "flux_scatter_sparse", "flux_scatter_crowded", "ssim_overall",
+               "completeness_rec", "completeness_noisy"]
     return results[[c for c in columns if c in results]].to_string(index=False)

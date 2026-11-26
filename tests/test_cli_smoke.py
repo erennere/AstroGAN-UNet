@@ -44,7 +44,10 @@ def test_smoke_runs_the_whole_workflow(tmp_path):
     results = pd.read_csv(work / "datasets" / "results.csv")
     assert len(results) == 4  # best setup x 2 training datasets x 2 test datasets
     assert set(results["train_on"]) == {"mock", "mock-faber"} and set(results["test_on"]) == {"mock:test", "mock-faber:test"}
-    assert results["flux_scatter"].notna().all() and "mock-faber" in table
+    assert results["flux_scatter_overall"].notna().all() and results["flux_scatter_sparse"].notna().all()
+    crowded = results.set_index("test_on")["flux_scatter_crowded"]  # mock-faber has no crowded images
+    assert crowded.loc["mock:test"].notna().all() and crowded.loc["mock-faber:test"].isna().all()
+    assert "mock-faber" in table and "flux_scatter_crowded" in table
     assert len(list(work.glob("*/done/*/*.json"))) == 2 + 2 + 2
     assert len(list(runs.glob("*/*/eval/*/plots/*.png"))) >= 4 * 4 + 2 * 4
     assert not list(tmp_path.rglob(".*.tmp*")), "no temporary files are left behind"

@@ -80,12 +80,14 @@ def test_tuning_choice_picks_the_rate_with_the_lowest_validation_loss(tmp_path):
 def test_epoch_budget_respects_min_and_max(tmp_path):
     cfg = _study(tmp_path, "workflow.tune.top=1", "workflow.tune.learning_rates=[0.0002]")
     _fake_ranking(cfg)
-    for best_epoch, expected in ((2, 20), (90, 100)):
+    for best_epoch, status, expected, improving in ((2, "stopped_early", 20, False), (90, "stopped_early", 100, False),
+                                                    (100, "finished", 100, True)):
         run = stage_runs(cfg, "tune")[0][0]
         write_json(marker_path(cfg, "tune", run.key), {"run": run.key, "evaluated": [], "train": {
-            "status": "finished", "epochs": 100, "best_epoch": best_epoch, "best_val_rec_loss": 0.1}})
+            "status": status, "epochs": max(best_epoch, 12), "best_epoch": best_epoch, "best_val_rec_loss": 0.1}})
         choose_tuning(cfg)
-        assert pd.read_csv(choice_path(cfg))["epochs"].tolist() == [expected]
+        choice = pd.read_csv(choice_path(cfg))
+        assert choice["epochs"].tolist() == [expected] and choice["still_improving"].tolist() == [improving]
 
 
 def test_setups_may_not_change_dataset_settings(tmp_path):
@@ -113,12 +115,18 @@ def test_plan_follows_a_new_ranking(tmp_path):
         plan.run("tune", "all/nothing-12345678")
 
 
+def _measures(group, scatter, bias, ssim, radius, ellipticity, guard, n=10):
+    return {f"flux_scatter_{group}": scatter, f"flux_bias_{group}": bias, f"ssim_{group}": ssim,
+            f"radius_error_{group}": radius, f"ellipticity_error_{group}": ellipticity,
+            f"guard_ok_{group}": guard, f"n_samples_{group}": n}
+
+
 def test_ranking_uses_mean_rank_guard_and_skips_diverged_runs():
     base = {"setup": "{}", "status": "finished"}
     table = pd.DataFrame([
-        {**base, "key": "a", "flux_scatter": 0.10, "flux_bias": 0.01, "ssim": 0.90, "radius_error": 0.1, "ellipticity_error": 0.1, "guard_ok": True},
-        {**base, "key": "b", "flux_scatter": 0.20, "flux_bias": 0.02, "ssim": 0.80, "radius_error": 0.2, "ellipticity_error": 0.2, "guard_ok": True},
-        {**base, "key": "c", "flux_scatter": 0.01, "flux_bias": 0.00, "ssim": 0.99, "radius_error": 0.0, "ellipticity_error": 0.0, "guard_ok": False},
+        {**base, "key": "a", **_measures("overall", 0.10, 0.01, 0.90, 0.1, 0.1, True)},
+        {**base, "key": "b", **_measures("overall", 0.20, 0.02, 0.80, 0.2, 0.2, True)},
+        {**base, "key": "c", **_measures("overall", 0.01, 0.00, 0.99, 0.0, 0.0, False)},
         {"setup": "{}", "key": "d", "status": "diverged"},
     ])
     weights = {"flux_scatter": 1, "flux_bias": 1, "ssim": 1, "radius_error": 0.5, "ellipticity_error": 0.5}
@@ -127,6 +135,35 @@ def test_ranking_uses_mean_rank_guard_and_skips_diverged_runs():
     assert ranked["rank"].iloc[2:].isna().all()
     unguarded = rank_table(table, weights, guard=False)
     assert unguarded["key"].tolist()[:3] == ["c", "a", "b"] and pd.isna(unguarded["rank"].iloc[3])
+
+
+def test_ranking_weighs_crop_groups():
+    """'a' is a little better on sparse crops, 'b' much better on crowded ones. Overall measures follow the
+    crowded crops (they hold most sources); group weights decide how much each kind of field counts."""
+    base = {"setup": "{}", "status": "finished"}
+    weights = {"flux_scatter": 1, "flux_bias": 0, "ssim": 0, "radius_error": 0, "ellipticity_error": 0}
+    table = pd.DataFrame([
+        {**base, "key": "a", **_measures("sparse", 0.10, 0, 0.9, 0, 0, True), **_measures("crowded", 0.50, 0, 0.9, 0, 0, True),
+         **_measures("overall", 0.45, 0, 0.9, 0, 0, True)},
+        {**base, "key": "b", **_measures("sparse", 0.11, 0, 0.9, 0, 0, True), **_measures("crowded", 0.30, 0, 0.9, 0, 0, True),
+         **_measures("overall", 0.28, 0, 0.9, 0, 0, True)},
+        {**base, "key": "c", **_measures("sparse", 0.12, 0, 0.9, 0, 0, True), **_measures("crowded", 0.90, 0, 0.9, 0, 0, True),
+         **_measures("overall", 0.80, 0, 0.9, 0, 0, True)},
+    ])
+    assert rank_table(table, weights, groups={"sparse": 1})["key"].tolist() == ["a", "b", "c"]
+    assert rank_table(table, weights, groups={"overall": 1})["key"].tolist() == ["b", "a", "c"]
+    equal = rank_table(table, weights, groups={"sparse": 1, "crowded": 1})
+    assert equal["score"].tolist()[:2] == [1.5, 1.5]  # a and b: one win each
+    sparse_first = rank_table(table, weights, groups={"sparse": 3, "crowded": 1})
+    assert sparse_first["key"].tolist() == ["a", "b", "c"]
+    assert sparse_first["score"].tolist() == [1.25, 1.75, 3.0]  # 0.75 x sparse rank + 0.25 x crowded rank
+    # the guard must hold in every weighted group
+    table.loc[0, "guard_ok_crowded"] = False
+    guarded = rank_table(table, weights, groups={"sparse": 3, "crowded": 1})
+    assert guarded["key"].tolist()[:2] == ["b", "c"] and pd.isna(guarded["rank"].iloc[2])
+    # an evaluation set without crowded crops is ranked on the sparse ones alone
+    sparse_only = table.drop(columns=[c for c in table if c.endswith("_crowded")])
+    assert rank_table(sparse_only, weights, groups={"sparse": 3, "crowded": 1})["key"].tolist() == ["a", "b", "c"]
 
 
 def test_progress_lists_every_stage(tmp_path):

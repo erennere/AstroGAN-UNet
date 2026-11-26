@@ -2,6 +2,8 @@
 
 Output: <run>/eval/<dataset>_<split>/ with samples.parquet (one row per noisy input),
 sources.parquet (one row per deep-image source, with its matches), summary.json and examples.npz.
+summary.json holds the measures for all crops ("overall") and separately for sparse and crowded crops
+("groups"; crowded as marked by the dataset stage).
 Every model evaluated on the same dataset split sees byte-identical noisy inputs.
 """
 from __future__ import annotations
@@ -29,9 +31,7 @@ def eval_dir(run_dir: Path, dataset: str, split: str) -> Path:
     return Path(run_dir) / "eval" / f"{dataset}_{split}"
 
 
-def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = None, split: str | None = None,
-             image_root: Path | None = None) -> Path:
-    """Evaluate a run; `image_root` is where the FITS files are read from (default: data/mast)."""
+def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = None, split: str | None = None) -> Path:
     import keras
 
     run_dir = Path(run_dir or cfg.run_dir)
@@ -50,7 +50,7 @@ def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = Non
         raise FileNotFoundError(f"{run_dir}: no best checkpoint record")
     model = keras.models.load_model(best, compile=False)
     scaler = Scaler(run_cfg.scaling.mode, run_cfg.scaling.log_clip_max)
-    store = CropStore(image_root or cfg.mast_dir, cfg.dataset.hdu)
+    store = CropStore(cfg.mast_dir, cfg.dataset.hdu, cfg.dataset.weight_hdu)
     e = cfg.eval
     samples, sources, examples = [], [], {"noisy": [], "rec": [], "clean": []}
     records = table.to_dict("records")
@@ -71,7 +71,8 @@ def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = Non
             threshold = e.detect_nsigma * noisy_sigma(row["sigma"], row["ratio"])
             sample, src = compare(clean, noisy, rec, threshold, e, row["photflam"], row["photplam"])
             ids = {"sample_id": row["sample_id"], "crop_id": row["crop_id"], "image_id": row["image_id"], "ratio": row["ratio"]}
-            samples.append({**ids, "sigma": row["sigma"], "threshold": threshold, **sample})
+            samples.append({**ids, "sigma": row["sigma"], "crowded": bool(row.get("crowded", False)),
+                            "threshold": threshold, **sample})
             src = src.assign(**ids)
             sources.append(src)
             if len(examples["rec"]) < e.n_examples:
@@ -88,7 +89,8 @@ def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = Non
     best_info = json.loads((run_dir / "checkpoints" / "best.json").read_text(encoding="utf-8"))
     result.update({"run": run_dir.name, "dataset": dataset, "split": split, "checkpoint_epoch": best_info["epoch"]})
     write_json(out / "summary.json", result)  # written last: its presence means "evaluated"
-    o = result["overall"]
-    log.info("evaluate %s on %s/%s: completeness %.3f (noisy %.3f), flux scatter %.3f mag, SSIM %.3f",
-             run_dir.name, dataset, split, o["completeness_rec"], o["completeness_noisy"], o["flux_scatter_rec"], o["ssim_rec"])
+    for group, o in result["groups"].items():
+        log.info("evaluate %s on %s/%s, %s crops (%d samples): completeness %.3f (noisy %.3f), flux scatter %.3f mag, "
+                 "SSIM %.3f", run_dir.name, dataset, split, group, o["n_samples"], o["completeness_rec"],
+                 o["completeness_noisy"], o["flux_scatter_rec"], o["ssim_rec"])
     return out

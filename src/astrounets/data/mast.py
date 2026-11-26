@@ -188,18 +188,30 @@ def apply_buffer(ra, dec, split: np.ndarray, overlap_arcmin: float) -> np.ndarra
     return split
 
 
+def _selected(pool: pd.DataFrame, d) -> pd.Series:
+    """Rows of the MAST table that dataset settings `d` would use (the same filters as select_images)."""
+    keep = (pool["exposure"] >= d.exposure_min) & (pool["exposure"] <= d.exposure_max)
+    if d.apertures:
+        keep &= pool["aperture"].isin(d.apertures)
+    if d.pi_names:
+        keep &= pool["pi"].astype(str).str.upper().isin({n.upper() for n in d.pi_names})
+    return keep
+
+
 def choose_downloads(table: pd.DataFrame, cfg: Config) -> pd.DataFrame:
-    """Rows to download: all usable ones, or with mast.download_limit a small subset that matches the
-    dataset filters and is spread over splits (by their shares) and over as many tiles as possible."""
-    d, limit = cfg.dataset, cfg.mast.download_limit
+    """Rows to download. Without mast.download_limit: every image that any entry of `datasets` can use
+    (images in buffer, outside the exposure range or with other apertures are never downloaded). With
+    a limit: a small subset for dataset.name, spread over splits (by their shares) and over tiles."""
+    from astrounets.config import with_dataset
+
+    limit = cfg.mast.download_limit
     pool = table[table["split"].isin(["train", "val", "test"])]
     if limit is None:
-        return pool
-    if d.apertures:
-        pool = pool[pool["aperture"].isin(d.apertures)]
-    if d.pi_names:
-        pool = pool[pool["pi"].astype(str).str.upper().isin({n.upper() for n in d.pi_names})]
-    pool = pool[(pool["exposure"] >= d.exposure_min) & (pool["exposure"] <= d.exposure_max)]
+        usable = pd.Series(False, index=pool.index)
+        for name in cfg.datasets:
+            usable |= _selected(pool, with_dataset(cfg, name).dataset)
+        return pool[usable]
+    pool = pool[_selected(pool, cfg.dataset)]
     rng = np.random.default_rng([cfg.seed, 11])
     shares = {"train": cfg.mast.split.train, "val": cfg.mast.split.val, "test": cfg.mast.split.test}
     chosen = []

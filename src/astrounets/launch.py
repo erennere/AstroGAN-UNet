@@ -1,10 +1,12 @@
 """`astrounets workflow | status | stop`: start Snakemake for the whole study, in the background.
 
-Same command on a laptop and on Helix: with `sbatch` on the PATH the SLURM profile is used (every
-run becomes a SLURM job, fetch and the quick summary steps run where the workflow runs), otherwise
-the local profile (one job at a time on this machine). The workflow keeps running after the console
-is closed (like `nohup ... &`); its log is runs/_workflow/logs/<start time>.log. Starting again
-continues where it stopped: finished runs are kept, interrupted runs resume from their checkpoint.
+With `sbatch` on the PATH the SLURM profile is used (every run becomes a SLURM job; fetch and the
+quick summary steps run where the workflow runs), otherwise the local profile (one job at a time on
+this machine). On Helix the workflow itself runs as a job: `sbatch workflow/helix/run.sbatch`, which
+calls `astrounets workflow --foreground`. Elsewhere `astrounets workflow` keeps running after the
+console is closed (like `nohup ... &`); its log is runs/_workflow/logs/<start time>.log. Starting
+again continues where it stopped: finished runs are kept, interrupted runs resume from their
+checkpoint. `status` and `stop` work for both kinds.
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -23,6 +26,7 @@ from astrounets.files import write_json
 from astrounets.workflow import choice_path, progress, ranking_path, results_path, workflow_dir
 
 UNTIL = ("data", "models", "tune", "datasets")
+ACTIVE_SLURM_STATES = {"PENDING", "RUNNING", "CONFIGURING", "COMPLETING", "SUSPENDED", "REQUEUED", "RESIZING"}
 
 
 def _state_path(cfg: Config) -> Path:
@@ -46,11 +50,30 @@ def is_alive(pid: int) -> bool:
         return False
 
 
-def running_pid(cfg: Config) -> int | None:
+def slurm_job_state(job_id: str) -> str | None:
+    """State of a queued or running SLURM job, or None (job over, or no SLURM here)."""
+    if shutil.which("squeue") is None:
+        return None
+    out = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%T"], capture_output=True, text=True)
+    state = out.stdout.strip().splitlines()[0].strip() if out.returncode == 0 and out.stdout.strip() else ""
+    return state if state in ACTIVE_SLURM_STATES else None
+
+
+def running(cfg: Config) -> dict | None:
+    """The workflow's state record if it is still running, as a SLURM job or as a process here."""
     state = _read_state(cfg)
-    if state and is_alive(int(state["pid"])):
-        return int(state["pid"])
-    return None
+    if state is None:
+        return None
+    job = state.get("slurm_job")
+    if job and job != os.environ.get("SLURM_JOB_ID"):
+        return state if slurm_job_state(job) else None
+    return state if is_alive(int(state["pid"])) else None
+
+
+def _where(state: dict) -> str:
+    if state.get("slurm_job"):
+        return f"SLURM job {state['slurm_job']} on {state.get('host', '?')}"
+    return f"process {state['pid']}"
 
 
 def freeze(cfg: Config) -> Path:
@@ -96,6 +119,12 @@ def _environment(root: Path) -> dict:
     return env
 
 
+def _default_sigint() -> None:
+    """Child processes started from a script's background job inherit an ignored SIGINT; give it back,
+    so that Ctrl-C, `astrounets stop` and run.sbatch can stop Snakemake (which then cancels its jobs)."""
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
 def _spawn_detached(command: list[str], log_file: Path, env: dict, cwd: Path) -> int:
     """Start `command` so that it survives closing the console (nohup on Linux, a hidden console of
     its own on Windows); its output goes to `log_file`."""
@@ -108,16 +137,16 @@ def _spawn_detached(command: list[str], log_file: Path, env: dict, cwd: Path) ->
             except OSError:
                 proc = subprocess.Popen(command, creationflags=flags, **kwargs)
         else:
-            proc = subprocess.Popen(command, start_new_session=True, **kwargs)
+            proc = subprocess.Popen(command, start_new_session=True, preexec_fn=_default_sigint, **kwargs)
     return proc.pid
 
 
 def start(config: Path, overrides: list[str], local: bool = False, foreground: bool = False,
           dry_run: bool = False, until: str | None = None) -> int:
     cfg = load_config(config, overrides)
-    pid = running_pid(cfg)
-    if pid is not None:
-        print(f"the workflow is already running (process {pid}); `astrounets status` shows its progress, "
+    other = running(cfg)
+    if other is not None:
+        print(f"the workflow is already running ({_where(other)}); `astrounets status` shows its progress, "
               "`astrounets stop` stops it")
         return 1
     root = find_root(Path(__file__).parent)
@@ -133,9 +162,12 @@ def start(config: Path, overrides: list[str], local: bool = False, foreground: b
     # No workflow of ours is running, so a lock left by one that was killed can go.
     subprocess.run(command[:-2] + ["--unlock"] + command[-2:], env=env, cwd=wdir, capture_output=True)
     state = {"started": datetime.now().isoformat(timespec="seconds"), "profile": profile, "until": until,
-             "config": Path(config).as_posix(), "command": command}
+             "config": Path(config).as_posix(), "host": socket.gethostname(),
+             "slurm_job": os.environ.get("SLURM_JOB_ID"), "command": command}
     if foreground:
-        proc = subprocess.Popen(command, env=env, cwd=wdir)
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        extra = {} if os.name == "nt" else {"preexec_fn": _default_sigint}
+        proc = subprocess.Popen(command, env=env, cwd=wdir, **extra)
         write_json(_state_path(cfg), {"pid": proc.pid, "log": None, **state})
         try:
             return proc.wait()
@@ -172,14 +204,16 @@ def status(config: Path, overrides: list[str], lines: int = 15) -> str:
     if state is None:
         out.append(f"no workflow started yet for {cfg.runs_dir.as_posix()}")
     else:
-        alive = is_alive(int(state["pid"]))
-        out.append(f"workflow {'running' if alive else 'not running'} (process {state['pid']}, started "
+        alive = running(cfg) is not None
+        out.append(f"workflow {'running' if alive else 'not running'} ({_where(state)}, started "
                    f"{state['started']}, profile {state['profile']})")
     for stage, text in progress(cfg):
         out.append(f"  {stage:<9} {text}")
     if state is not None and state["log"]:
         out.append(f"log {state['log']} (last lines):")
         out.extend("  " + line for line in _tail(Path(state["log"]), lines).splitlines())
+    elif state is not None and state.get("slurm_job"):
+        out.append(f"log: workflow-{state['slurm_job']}.log in the folder the job was submitted from")
     elif state is not None:
         out.append("started in the foreground: its output went to that console")
     return "\n".join(out)
@@ -191,10 +225,17 @@ def stop(config: Path, overrides: list[str], wait: float = 60.0) -> int:
     import psutil
 
     cfg = load_config(config, overrides)
-    pid = running_pid(cfg)
-    if pid is None:
+    state = running(cfg)
+    if state is None:
         print("no workflow is running")
         return 0
+    job = state.get("slurm_job")
+    if job and job != os.environ.get("SLURM_JOB_ID"):  # run.sbatch: its batch script stops Snakemake
+        subprocess.run(["scancel", "--signal=USR2", "--batch", str(job)], check=True)
+        print(f"asked SLURM job {job} to stop: Snakemake cancels its running jobs, then the job ends. "
+              "Submitting run.sbatch again continues where it stopped")
+        return 0
+    pid = int(state["pid"])
     proc = psutil.Process(pid)
     children = proc.children(recursive=True)
     if os.name == "nt":

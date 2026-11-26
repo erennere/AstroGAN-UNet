@@ -12,15 +12,28 @@ sep.set_extract_pixstack(2_000_000)
 sep.set_sub_object_limit(4096)
 
 
-def measure(image: np.ndarray, threshold: float, e: Eval) -> pd.DataFrame:
-    """Detect sources above `threshold` (e-/s per pixel, absolute) after local background removal.
+def background(image: np.ndarray, e: Eval) -> np.ndarray | None:
+    """SEP background map of an image, or None if SEP cannot model it."""
+    try:
+        return sep.Background(np.ascontiguousarray(image, dtype=np.float64), bw=e.bkg_box_size, bh=e.bkg_box_size).back()
+    except Exception:
+        return None
 
+
+def measure(image: np.ndarray, threshold: float, e: Eval, back: np.ndarray | None = None) -> pd.DataFrame:
+    """Detect sources above `threshold` (e-/s per pixel, absolute) after subtracting a background.
+
+    `back` is the background map to subtract; by default the image's own. To compare images of the
+    same sky, pass one map (from the deep image) to every call: separately estimated backgrounds
+    absorb more of the faint outer light of sources the noisier an image is, which biases fluxes.
     Returns positions, Kron flux, shape (a, b, theta), half-light radius and ellipticity 1 - b/a.
     """
     data = np.ascontiguousarray(image, dtype=np.float64)
+    back = background(data, e) if back is None else back
+    if back is None:
+        return pd.DataFrame(columns=COLUMNS)
+    sub = data - back
     try:
-        bkg = sep.Background(data, bw=e.bkg_box_size, bh=e.bkg_box_size)
-        sub = data - bkg.back()
         objects = sep.extract(sub, threshold, minarea=e.detect_minarea,
                               deblend_nthresh=e.deblend_nthresh, deblend_cont=e.deblend_cont)
     except Exception:  # SEP buffer overflows on pathological images: report no detections

@@ -7,7 +7,7 @@ import time
 import pytest
 
 from astrounets.config import load_config
-from astrounets.launch import (_spawn_detached, choose_profile, freeze, is_alive, running_pid, snakemake_command,
+from astrounets.launch import (_spawn_detached, choose_profile, freeze, is_alive, running, snakemake_command,
                                start, status, stop)
 from astrounets.workflow import workflow_dir
 from conftest import ROOT, SMOKE
@@ -75,11 +75,11 @@ def test_detached_process_survives_and_stops(tmp_path):
         state = workflow_dir(cfg) / "workflow.json"
         state.parent.mkdir(parents=True)
         state.write_text(json.dumps({"pid": pid, "started": "now", "profile": "local", "log": log.as_posix()}))
-        assert running_pid(cfg) == pid
+        assert running(cfg)["pid"] == pid
         assert start(SMOKE, _overrides(tmp_path)) == 1, "a second workflow on the same runs folder is refused"
         assert "workflow running" in status(SMOKE, _overrides(tmp_path))
         assert stop(SMOKE, _overrides(tmp_path), wait=10) == 0
-        assert not is_alive(pid) and running_pid(cfg) is None
+        assert not is_alive(pid) and running(cfg) is None
     finally:
         if is_alive(pid):
             os.kill(pid, 9)
@@ -93,7 +93,7 @@ def test_is_alive_ignores_other_processes():
 @pytest.mark.slow
 @pytest.mark.skipif(os.name == "nt", reason="the fake SLURM uses POSIX shells")
 def test_slurm_profile_runs_the_whole_workflow(tmp_path, monkeypatch):
-    """The Helix profile against a stand-in SLURM: every run is an sbatch job with its own TMPDIR."""
+    """The Helix profile against a stand-in SLURM: every run is its own sbatch job."""
     import fake_slurm
     import pandas as pd
 
@@ -113,9 +113,75 @@ def test_slurm_profile_runs_the_whole_workflow(tmp_path, monkeypatch):
     assert len(gpu) == 6 and all(j["gres"] == "gpu:A40:1" for j in gpu)  # 2 models + 2 tune + 2 datasets runs
     assert len([j for j in jobs if j["partition"] == "cpu-single"]) == 2  # the two datasets
     assert all(j["state"] == "COMPLETED" for j in jobs)
-    assert any((state / "tmp" / str(j["id"]) / "astrounets" / "originals").is_dir() for j in gpu), \
-        "training jobs read their images from the job's TMPDIR"
     results = pd.read_csv(workflow_dir(cfg) / "datasets" / "results.csv")
-    assert len(results) == 4 and results["flux_scatter"].notna().all()
+    assert len(results) == 4 and results["flux_scatter_overall"].notna().all()
     logs = list((workflow_dir(cfg) / ".snakemake" / "slurm_logs").rglob("*.log"))
-    assert len(logs) == len(jobs) and any("node scratch" in p.read_text() for p in logs)
+    assert len(logs) == len(jobs)
+
+
+def test_status_and_stop_reach_a_workflow_running_as_a_slurm_job(tmp_path, monkeypatch):
+    import astrounets.launch as launch
+
+    cfg = load_config(SMOKE, _overrides(tmp_path))
+    state = workflow_dir(cfg) / "workflow.json"
+    state.parent.mkdir(parents=True)
+    state.write_text(json.dumps({"pid": 1, "slurm_job": "4242", "host": "gpu-node", "started": "now",
+                                 "profile": "slurm", "log": None}))
+    monkeypatch.delenv("SLURM_JOB_ID", raising=False)
+    monkeypatch.setattr(launch, "slurm_job_state", lambda job: "RUNNING" if job == "4242" else None)
+    calls = []
+    monkeypatch.setattr(launch.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+    assert running(cfg)["slurm_job"] == "4242"
+    text = status(SMOKE, _overrides(tmp_path))
+    assert "workflow running (SLURM job 4242 on gpu-node" in text and "workflow-4242.log" in text
+    assert start(SMOKE, _overrides(tmp_path)) == 1, "a second workflow is refused while the job runs"
+    assert stop(SMOKE, _overrides(tmp_path)) == 0
+    assert calls == [["scancel", "--signal=USR2", "--batch", "4242"]]
+    monkeypatch.setattr(launch, "slurm_job_state", lambda job: None)
+    assert running(cfg) is None and "workflow not running" in status(SMOKE, _overrides(tmp_path))
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(os.name == "nt" or not (ROOT / ".venv" / "bin" / "astrounets").exists(),
+                    reason="needs the project's Linux .venv and POSIX shells")
+def test_helix_job_script_resubmits_itself_before_the_time_limit(tmp_path):
+    """workflow/helix/run.sbatch under the stand-in SLURM: on the time-limit warning (USR1) Snakemake
+    cancels its jobs and the script submits itself again, to start once this job has ended."""
+    import fake_slurm
+    import yaml
+
+    state = tmp_path / "slurm"
+    fake_slurm.install(tmp_path / "bin", state)
+    env = dict(os.environ, PATH=f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}", ASTROUNETS_ROOT=str(ROOT))
+    env.pop("SLURM_JOB_ID", None)
+    config = tmp_path / "study.yaml"
+    config.write_text(yaml.safe_dump({"base": str(SMOKE), "paths": {"data": str(tmp_path / "data"),
+                                                                     "runs": str(tmp_path / "runs")}}))
+    log = tmp_path / "workflow-%j.log"  # not into the repository, where run.sbatch would put it
+    job = subprocess.run(["sbatch", f"--output={log}", "workflow/helix/run.sbatch", str(config)], cwd=ROOT,
+                         env=env, capture_output=True, text=True, check=True).stdout.strip()
+    marker = tmp_path / "runs" / "_workflow" / "models" / "done"
+    for _ in range(240):  # until the first training jobs are under way
+        if any(json.loads(p.read_text()).get("partition") == "gpu-single" for p in state.glob("*.json")):
+            break
+        time.sleep(0.5)
+    subprocess.run(["scancel", "--signal=USR1", "--batch", job], env=env, check=True)
+    pending = []
+    for _ in range(240):
+        pending = [r for r in (json.loads(p.read_text()) for p in state.glob("*.json")) if r.get("dependency")]
+        if pending:
+            break
+        time.sleep(0.5)
+    assert pending and pending[0]["dependency"] == f"afterany:{job}"
+    assert pending[0]["command"].endswith(f"workflow/helix/run.sbatch {config}")
+    for _ in range(120):  # the old controller has ended and cancelled its training jobs
+        if json.loads((state / f"{job}.json").read_text())["state"] != "RUNNING":
+            break
+        time.sleep(0.5)
+    jobs = [json.loads(p.read_text()) for p in state.glob("*.json")]
+    assert json.loads((state / f"{job}.json").read_text())["state"] != "RUNNING"
+    assert all(j["state"] != "RUNNING" for j in jobs), "no training job is left running"
+    assert not marker.exists() or len(list(marker.rglob("*.json"))) < 2
+    first = json.loads((state / f"{job}.json").read_text())
+    assert first["partition"] == "cpu-single"  # from the #SBATCH lines of run.sbatch
+    assert (tmp_path / f"workflow-{job}.log").exists() and not (ROOT / f"workflow-{job}.log").exists()

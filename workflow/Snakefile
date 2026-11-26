@@ -21,7 +21,7 @@ wildcard_constraints:
     dataset="[a-z0-9][a-z0-9_-]*",
     run="[^/]+",
 
-# fetch needs the internet (on a cluster it runs on the login node); the summaries take seconds.
+# fetch and the summaries run in the workflow's own process (on Helix: the run.sbatch job).
 localrules: all, fetch, ranking, choice, results
 
 

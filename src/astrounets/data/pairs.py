@@ -17,7 +17,7 @@ from astrounets.files import write_parquet
 
 def noisy_pair(store: CropStore, row: dict, ratio: float, seed: int, size: int) -> tuple[np.ndarray, np.ndarray]:
     """(clean, noisy) crop in e-/s; identical for identical (row, ratio, seed)."""
-    clean = store.crop(row["path"], int(row["y"]), int(row["x"]), size)
+    clean = store.crop(row["path"], int(row["y"]), int(row["x"]), size, float(row["weight_cut"]))
     noisy = add_noise(clean, row["sigma"], ratio, np.random.default_rng(seed))
     return clean, noisy
 
@@ -96,14 +96,15 @@ def fixed_set(rows: pd.DataFrame, store: CropStore, cfg: Config, n: int, seed: i
 
 
 def eval_table(crops: pd.DataFrame, cfg: Config, split: str, dataset_dir: Path) -> pd.DataFrame:
-    """Frozen evaluation set: n_crops crops x eval ratios, each with a fixed noise seed.
+    """Frozen evaluation set: up to n_crops sparse and n_crops crowded crops x eval ratios, each with a
+    fixed noise seed (per group, so the crowded measures do not rest on a handful of crops).
 
     Stored as data/<dataset>/eval_<split>.parquet and rebuilt only when its settings change, so every
     model evaluated on a split sees byte-identical noisy inputs.
     """
     e = cfg.eval
     path = dataset_dir / f"eval_{split}.parquet"
-    settings = f"seed={cfg.seed};n={e.n_crops};ratios={list(map(float, e.ratios))};noise={cfg.noise}"
+    settings = f"seed={cfg.seed};n={e.n_crops} per group;ratios={list(map(float, e.ratios))};noise={cfg.noise}"
     if path.exists():
         table = pd.read_parquet(path)
         if len(table) and table["settings"].iloc[0] == settings:
@@ -112,7 +113,10 @@ def eval_table(crops: pd.DataFrame, cfg: Config, split: str, dataset_dir: Path) 
     if pool.empty:
         raise RuntimeError(f"no usable crops in split '{split}'")
     rng = np.random.default_rng([cfg.seed, 7])
-    chosen = pool.sample(n=min(e.n_crops, len(pool)), random_state=int(rng.integers(2**31))).reset_index(drop=True)
+    crowded = pool["crowded"].to_numpy(bool) if "crowded" in pool else np.zeros(len(pool), bool)
+    parts = [pool[crowded == flag] for flag in (False, True)]
+    chosen = pd.concat([part.sample(n=min(e.n_crops, len(part)), random_state=int(rng.integers(2**31)))
+                        for part in parts if len(part)]).reset_index(drop=True)
     rows = []
     for _, crop in chosen.iterrows():
         limit = float(max_ratio(crop["exptime"], cfg.noise))

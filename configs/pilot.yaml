@@ -41,6 +41,9 @@ eval:
   batch_size: 8
   n_examples: 6
 
+ranking:
+  guard: false             # two-epoch models never beat the noisy input; rank them anyway
+
 workflow:
   models:
     set: {}

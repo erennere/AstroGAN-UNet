@@ -2,7 +2,8 @@
 
 `install(bin_dir, state_dir)` writes executables sbatch, srun, sacct, squeue, scancel, scontrol,
 sacctmgr and sshare into bin_dir. sbatch runs the job in the background on this machine with
-SLURM_JOB_ID and a per-job TMPDIR set (like Helix's node-local scratch); sacct reports job states.
+SLURM_JOB_ID and a per-job TMPDIR set (as SLURM does); #SBATCH lines in a submitted script are read;
+sacct and squeue report job states.
 """
 from __future__ import annotations
 
@@ -34,26 +35,54 @@ def _next_id(state: Path) -> int:
     return value
 
 
-def sbatch(state: Path, args: list[str]) -> int:
+ALIASES = {"--partition": "-p", "--time": "-t", "--account": "-A", "--chdir": "-D", "-o": "--output", "-J": "--job-name"}
+VALUED = ("--job-name", "--output", "-D", "-t", "--mem", "-p", "-A", "--comment", "--gres", "--ntasks")
+
+
+def _options(args: list[str]) -> tuple[dict, list[str]]:
+    """sbatch options up to the script name; the script name and its arguments are returned as rest."""
     opts, i = {}, 0
     while i < len(args):
         arg = args[i]
-        if arg.startswith("--wrap="):
-            opts["wrap"] = arg[len("--wrap="):]
-        elif arg in ("--job-name", "--output", "-D", "-t", "--mem", "-p", "-A", "--comment", "--gres", "--ntasks"):
-            opts[arg] = args[i + 1]
-            i += 1
-        elif arg.startswith("--gres="):
-            opts["--gres"] = arg.split("=", 1)[1]
+        key, _, value = arg.partition("=") if arg.startswith("--") else (arg, "", "")
+        key = ALIASES.get(key, key)
+        if key == "--wrap":
+            opts["wrap"] = value
+        elif key == "--dependency":
+            opts["dependency"] = value
+        elif key in VALUED:
+            if not value:
+                i += 1
+                value = args[i]
+            opts[key] = value
+        elif not arg.startswith("-"):
+            return opts, args[i:]
         i += 1
+    return opts, []
+
+
+def sbatch(state: Path, args: list[str]) -> int:
+    opts, rest = _options(args)
+    if rest and Path(rest[0]).is_file():  # #SBATCH lines in the script; the command line wins
+        lines = Path(rest[0]).read_text().splitlines()
+        directives = [w for line in lines if line.startswith("#SBATCH") for w in shlex.split(line[7:])]
+        opts = {**_options(directives)[0], **opts}
     job_id = _next_id(state)
-    log = opts["--output"].replace("%j", str(job_id))
+    command = opts.get("wrap") or " ".join(shlex.quote(a) for a in ["bash", *rest])
+    record = {"id": job_id, "name": opts.get("--job-name", rest[0] if rest else "wrap"), "state": "RUNNING",
+              "gres": opts.get("--gres"), "partition": opts.get("-p"), "command": command,
+              "dependency": opts.get("dependency")}
+    if record["dependency"]:  # a stand-in: dependent jobs are recorded, not run
+        record["state"] = "PENDING"
+        (state / f"{job_id}.json").write_text(json.dumps(record))
+        print(job_id)
+        return 0
+    log = opts.get("--output", f"slurm-{job_id}.out").replace("%j", str(job_id))
     Path(log).parent.mkdir(parents=True, exist_ok=True)
     tmp = state / "tmp" / str(job_id)
     tmp.mkdir(parents=True)
-    env = dict(os.environ, SLURM_JOB_ID=str(job_id), TMPDIR=str(tmp), SLURM_CPUS_PER_TASK="2")
-    record = {"id": job_id, "name": opts["--job-name"], "state": "RUNNING", "gres": opts.get("--gres"),
-              "partition": opts.get("-p"), "command": opts["wrap"]}
+    env = dict(os.environ, SLURM_JOB_ID=str(job_id), TMPDIR=str(tmp), SLURM_CPUS_PER_TASK="2",
+               SLURM_SUBMIT_DIR=os.getcwd())
     (state / f"{job_id}.json").write_text(json.dumps(record))
     runner = (f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} _run "
               f"{shlex.quote(str(state))} {job_id}")
@@ -85,6 +114,9 @@ def srun(args: list[str]) -> int:
 
 
 def sacct(state: Path, args: list[str]) -> int:
+    if any("Account" in a for a in args):  # account lookup
+        print("fakeaccount")
+        return 0
     name = args[args.index("--name") + 1] if "--name" in args else None
     for path in sorted(state.glob("*.json")):
         record = json.loads(path.read_text())
@@ -94,16 +126,27 @@ def sacct(state: Path, args: list[str]) -> int:
 
 
 def scancel(state: Path, args: list[str]) -> int:
-    for job_id in args:
+    """scancel <id>... cancels; scancel --signal=SIG --batch <id> sends SIG to the job's batch script."""
+    import psutil
+
+    sig = next((a.split("=", 1)[1] for a in args if a.startswith("--signal=")), None)
+    for job_id in [a for a in args if not a.startswith("-")]:
         path = state / f"{job_id}.json"
-        if path.exists():
-            record = json.loads(path.read_text())
-            record["state"] = "CANCELLED"
-            path.write_text(json.dumps(record))
-            try:
-                os.killpg(record["pid"], signal.SIGTERM)
-            except (ProcessLookupError, KeyError):
-                pass
+        if not path.exists():
+            continue
+        record = json.loads(path.read_text())
+        if sig:  # the batch script is the "bash <script>" process below the job's runner
+            for proc in psutil.Process(record["pid"]).children(recursive=True):
+                if proc.cmdline()[:1] == ["bash"]:
+                    proc.send_signal(getattr(signal, "SIG" + sig))
+                    break
+            continue
+        record["state"] = "CANCELLED"
+        path.write_text(json.dumps(record))
+        try:
+            os.killpg(record["pid"], signal.SIGTERM)
+        except (ProcessLookupError, KeyError):
+            pass
     return 0
 
 
@@ -117,8 +160,13 @@ def main(argv: list[str]) -> int:
         return srun(args)
     if command == "sacct":
         return sacct(state, args)
-    if command == "squeue":  # same "<id>|<state>" lines as sacct
-        return sacct(state, args)
+    if command == "squeue":
+        if "-j" in args:  # squeue -h -j <id> -o %T: the state of one job, nothing once it is over
+            path = state / f"{args[args.index('-j') + 1]}.json"
+            if path.exists() and json.loads(path.read_text())["state"] in ("RUNNING", "PENDING"):
+                print(json.loads(path.read_text())["state"])
+            return 0
+        return sacct(state, args)  # same "<id>|<state>" lines as sacct
     if command == "scancel":
         return scancel(state, args)
     if command == "scontrol":

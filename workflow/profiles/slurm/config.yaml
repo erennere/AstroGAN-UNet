@@ -1,5 +1,5 @@
-# SLURM profile for bwForCluster Helix: every run is its own GPU job, datasets are CPU jobs,
-# fetch and the summaries run where the workflow runs (the login node, which has internet).
+# SLURM profile for bwForCluster Helix: every run is its own GPU job, datasets are CPU jobs;
+# fetch and the summaries run inside the workflow's own job (workflow/helix/run.sbatch).
 executor: slurm
 jobs: 10                  # at most this many SLURM jobs at once
 keep-going: true

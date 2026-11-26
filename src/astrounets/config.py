@@ -30,6 +30,7 @@ MODEL_TYPES = ("unet", "gan")
 ACTIVATIONS = ("leakyrelu", "relu", "elu", "gelu")
 OUTPUT_ACTIVATIONS = ("none", "sigmoid")
 RANKING_MEASURES = ("flux_scatter", "flux_bias", "ssim", "radius_error", "ellipticity_error")
+CROP_GROUPS = ("overall", "sparse", "crowded")  # evaluation groups: every crop, or by dataset.crowded_sky_fraction
 SPLITS = ("train", "val", "test")
 
 
@@ -38,7 +39,6 @@ SPLITS = ("train", "val", "test")
 class Paths:
     data: str
     runs: str
-    node_scratch: bool
 
 
 @dataclass(frozen=True)
@@ -90,12 +90,20 @@ class Dataset:
     max_images: int | None
     filter: str
     hdu: str
+    weight_hdu: str
+    min_weight_fraction: float
     patch_size: int
     min_valid_fraction: float
     bkg_box_size: int
     bkg_filter_size: int
     bkg_sigma: float
     bkg_exclude_percentile: float
+    source_nsigma: float
+    source_grow: int
+    read_noise: float
+    dark_current: float
+    max_noise_excess: float
+    crowded_sky_fraction: float
     workers: int
 
 
@@ -187,6 +195,7 @@ class Plots:
 @dataclass(frozen=True)
 class Ranking:
     guard: bool
+    groups: dict[str, float]
     weights: dict[str, float]
 
 
@@ -342,7 +351,7 @@ def _build(tp: Any, value: Any, where: str) -> Any:
 
 # ------------------------------------------------------------------------------------- loading
 # Mappings that an overriding file replaces as a whole instead of merging key by key.
-_REPLACED = {("workflow", "models", "grid"), ("workflow", "models", "set")}
+_REPLACED = {("workflow", "models", "grid"), ("workflow", "models", "set"), ("ranking", "groups")}
 
 
 def _deep_merge(base: dict, extra: dict, _at: tuple = ()) -> dict:
@@ -538,6 +547,11 @@ def validate(cfg: Config) -> None:
              f"datasets.{name}: names use lowercase letters, digits, _ or - (and 'mast' is taken)")
     need(d.exposure_max > d.exposure_min > 0, "dataset: need 0 < exposure_min < exposure_max")
     need(0 < d.min_valid_fraction <= 1, "dataset.min_valid_fraction must be in (0, 1]")
+    need(0 <= d.min_weight_fraction < 1, "dataset.min_weight_fraction must be in [0, 1) (0 = no weight cut)")
+    need(d.source_nsigma > 0 and d.source_grow >= 0, "dataset: source_nsigma must be positive, source_grow >= 0")
+    need(d.read_noise >= 0 and d.dark_current >= 0, "dataset: read_noise and dark_current must be >= 0")
+    need(d.max_noise_excess > 1, "dataset.max_noise_excess must be > 1")
+    need(0 <= d.crowded_sky_fraction <= 1, "dataset.crowded_sky_fraction must be in [0, 1]")
     need(d.patch_size % (cfg.model.pool_size ** (cfg.model.depth - 1)) == 0,
          "dataset.patch_size must be divisible by model.pool_size ** (model.depth - 1)")
     need(d.max_images is None or d.max_images > 0, "dataset.max_images must be null or positive")
@@ -567,6 +581,10 @@ def validate(cfg: Config) -> None:
     need(bool(e.ratios) and all(r > 1 for r in e.ratios), "eval.ratios must all be > 1")
     need(e.n_crops >= 1 and e.batch_size >= 1, "eval: n_crops and batch_size must be >= 1")
     need(e.mag_bins == sorted(e.mag_bins) and len(e.mag_bins) >= 2, "eval.mag_bins must be increasing")
+    groups = cfg.ranking.groups
+    need(isinstance(groups, dict) and set(groups) <= set(CROP_GROUPS)
+         and all(isinstance(w, (int, float)) and w >= 0 for w in groups.values()) and sum(groups.values()) > 0,
+         f"ranking.groups: weights >= 0 with a positive sum for some of {CROP_GROUPS}, e.g. {{sparse: 3, crowded: 1}}")
     unknown = set(cfg.ranking.weights) - set(RANKING_MEASURES)
     need(not unknown, f"ranking.weights: unknown measure(s) {sorted(unknown)}; use {RANKING_MEASURES}")
     need(all(w >= 0 for w in cfg.ranking.weights.values()) and sum(cfg.ranking.weights.values()) > 0,

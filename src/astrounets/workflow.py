@@ -1,7 +1,8 @@
 """The study as three stages of runs. workflow/Snakefile schedules them (`astrounets workflow`).
 
 models    stage 1: every valid combination of workflow.models.grid, trained on the config's dataset
-          and ranked on the first workflow.models.evaluate target by ranking.weights
+          and ranked on the first workflow.models.evaluate target by ranking.weights (ranks averaged
+          over the crop groups in ranking.groups with their weights: sparse fields first)
 tune      the `top` best setups of stage 1, each trained once per rate in workflow.tune.learning_rates
           until its validation loss stops improving (patience). Per setup, the rate with the lowest
           validation loss wins, and the epochs it needed (times epoch_margin, within min_epochs and
@@ -39,7 +40,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from astrounets.config import (Config, ConfigError, RANKING_MEASURES, _deep_merge, dataset_key, from_dict,
+from astrounets.config import (CROP_GROUPS, Config, ConfigError, RANKING_MEASURES, _deep_merge, dataset_key, from_dict,
                                parse_overrides, to_dict, with_dataset)
 from astrounets.files import write_csv, write_json
 
@@ -213,20 +214,6 @@ class Plan:
 
 
 # ------------------------------------------------------------------------------------------ jobs
-def _needed_images(run: Run, train_needed: bool, pending: list[tuple[str, str]]) -> list[str]:
-    from astrounets.data.dataset import load_crops
-    from astrounets.data.pairs import eval_table
-
-    paths: set[str] = set()
-    if train_needed:
-        crops = load_crops(run.cfg)
-        paths |= set(crops.loc[crops["split"].isin(["train", "val"]), "path"])
-    for dataset, split in pending:
-        table = eval_table(load_crops(run.cfg, dataset), run.cfg, split, run.cfg.dataset_dir(dataset))
-        paths |= set(table["path"])
-    return sorted(paths)
-
-
 def _lock_is_stale(path: Path, stale_after: float) -> bool:
     import psutil
 
@@ -247,8 +234,8 @@ def _lock_is_stale(path: Path, stale_after: float) -> bool:
 def run_lock(run_dir: Path, stale_after: float = 600.0, poll: float = 30.0, beat: float = 60.0):
     """Hold <run>/run.lock while a job works on a run folder.
 
-    If the workflow is restarted while a job of the earlier start still runs (say the login node
-    rebooted), Snakemake submits the run again; the new job waits here until the old one is done
+    If the workflow is restarted while a job of the earlier start still runs (say the workflow job
+    was cancelled), Snakemake submits the run again; the new job waits here until the old one is done
     instead of writing into the same folder. A lock whose holder died is taken over once it is
     `stale_after` seconds old (at once if the holder was a process on this machine)."""
     path = Path(run_dir) / "run.lock"
@@ -293,24 +280,18 @@ def run_job(run: Run) -> dict:
 
 
 def _run_job(run: Run) -> dict:
-    from astrounets.data.scratch import image_root
     from astrounets.evaluate.run import eval_dir, evaluate
     from astrounets.plots import make_plots
     from astrounets.train import train, train_result
 
     cfg, run_dir = run.cfg, run.cfg.run_dir
-    train_needed = train_result(run_dir) is None
-    pending = [t for t in run.targets if not (eval_dir(run_dir, *t) / "summary.json").exists()]
-    root = cfg.mast_dir
-    if train_needed or pending:
-        root = image_root(cfg, _needed_images(run, train_needed, pending))
-    train(cfg, root)
+    train(cfg)
     result = train_result(run_dir)
     evaluations = []
     if result["status"] != "diverged":
         for dataset, split in run.targets:
-            if (dataset, split) in pending:
-                evaluate(cfg, run_dir, dataset, split, root)
+            if not (eval_dir(run_dir, dataset, split) / "summary.json").exists():
+                evaluate(cfg, run_dir, dataset, split)
             evaluations.append(f"{dataset}:{split}")
     make_plots(cfg, run_dir)
     return {"run": run.key, "train": result, "evaluated": evaluations}
@@ -364,7 +345,7 @@ def rank_models(cfg: Config) -> Path:
         if status != "diverged":
             row.update(_eval_summary(run, *run.targets[0])["ranking"])
         rows.append(row)
-    table = rank_table(pd.DataFrame(rows), cfg.ranking.weights, cfg.ranking.guard)
+    table = rank_table(pd.DataFrame(rows), cfg.ranking.weights, cfg.ranking.guard, cfg.ranking.groups)
     out = write_csv(table, ranking_path(cfg))
     shown = table.drop(columns=["setup"]).to_string(index=False)
     log.info("stage-1 ranking written to %s\n%s", out, shown)
@@ -374,24 +355,36 @@ def rank_models(cfg: Config) -> Path:
     return out
 
 
-def rank_table(table: pd.DataFrame, weights: dict[str, float], guard: bool = True) -> pd.DataFrame:
-    """Weighted mean of per-measure ranks over runs that trained and pass the guard; the others get no rank."""
+def rank_table(table: pd.DataFrame, weights: dict[str, float], guard: bool = True,
+               groups: dict[str, float] | None = None) -> pd.DataFrame:
+    """Weighted mean of per-measure ranks over runs that trained and pass the guard; the others get no rank.
+
+    Columns are <measure>_<group> and guard_ok_<group>. A measure's rank is the weighted mean of its
+    ranks within the groups (`groups`: name -> weight) that the evaluation set has, so a group's say
+    does not depend on how many crops or sources it holds; the guard must hold in each of them."""
     table = table.copy()
-    for measure in (*RANKING_MEASURES, "guard_ok"):
-        if measure not in table:
-            table[measure] = np.nan
+    groups = groups or {"overall": 1.0}
+    present = {g: w for g, w in groups.items() if w > 0 and f"n_samples_{g}" in table
+               and pd.to_numeric(table[f"n_samples_{g}"]).fillna(0).gt(0).any()}
+    if not present:
+        present = {"overall": 1.0}
+    for g in present:
+        for measure in (*RANKING_MEASURES, "guard_ok"):
+            if f"{measure}_{g}" not in table:
+                table[f"{measure}_{g}"] = np.nan
     passing = table["status"].ne("diverged") if "status" in table else pd.Series(True, index=table.index)
     if guard:
-        passing &= table["guard_ok"].map(lambda v: v is True or v == 1.0)
+        for g in present:
+            passing &= table[f"guard_ok_{g}"].map(lambda v: v is True or v == 1.0)
     score = np.zeros(len(table))
     total = sum(weights.get(m, 0.0) for m in RANKING_MEASURES)
     for measure in RANKING_MEASURES:
         w = weights.get(measure, 0.0)
         if w == 0:
             continue
-        values = table[measure].astype(float)
-        ranks = values.where(passing).rank(ascending=measure not in HIGHER_IS_BETTER, na_option="bottom")
-        score += w * ranks.to_numpy()
+        ranks = [table[f"{measure}_{g}"].astype(float).where(passing)
+                 .rank(ascending=measure not in HIGHER_IS_BETTER, na_option="bottom").to_numpy() for g in present]
+        score += w * np.average(ranks, axis=0, weights=list(present.values()))
     table["score"] = np.where(passing, score / total, np.nan)
     table = table.sort_values("score", na_position="last").reset_index(drop=True)
     table.insert(0, "rank", [i + 1 if ok else None for i, ok in enumerate(table["score"].notna())])
@@ -415,8 +408,14 @@ def choose_tuning(cfg: Config) -> Path:
         best = group.loc[group["best_val_rec_loss"].astype(float).idxmin()]
         epochs = int(min(max(math.ceil(best["best_epoch"] * t.epoch_margin), t.min_epochs), t.max_epochs))
         losses = {f"{r:g}": float(v) for r, v in zip(group["learning_rate"], group["best_val_rec_loss"])}
+        # best loss in the very last epoch of a run that was not stopped early: it may still be improving
+        still_improving = best["status"] == "finished" and int(best["best_epoch"]) >= t.max_epochs
+        if still_improving:
+            log.warning("setup %s: validation loss still improving after workflow.tune.max_epochs = %d; its "
+                        "stage-2 budget is capped there (raise max_epochs for a fair budget)", _setup_text(setup), t.max_epochs)
         choices.append({"stage1_rank": rank, "setup": _setup_text(setup), "learning_rate": float(best["learning_rate"]),
-                        "best_epoch": int(best["best_epoch"]), "epochs": epochs, "val_loss_by_rate": json.dumps(losses)})
+                        "best_epoch": int(best["best_epoch"]), "epochs": epochs, "still_improving": bool(still_improving),
+                        "val_loss_by_rate": json.dumps(losses)})
     if not choices:
         raise RuntimeError("every tuning run diverged; lower workflow.tune.learning_rates")
     table = pd.DataFrame(choices)
@@ -440,10 +439,11 @@ def collect_results(cfg: Config) -> Path:
             rows.append(row)
     table = pd.DataFrame(rows)
     out = write_csv(table, results_path(cfg))
-    if "flux_scatter" in table:
-        pivot = table.pivot_table(index=["setup", "train_on"], columns="test_on", values="flux_scatter")
-        log.info("results written to %s\nflux scatter [mag] (rows: trained on, columns: tested on)\n%s", out,
-                 pivot.round(3).to_string())
+    log.info("results written to %s", out)
+    for group in CROP_GROUPS:
+        if f"flux_scatter_{group}" in table and table[f"flux_scatter_{group}"].notna().any():
+            pivot = table.pivot_table(index=["setup", "train_on"], columns="test_on", values=f"flux_scatter_{group}")
+            log.info("flux scatter [mag], %s crops (rows: trained on, columns: tested on)\n%s", group, pivot.round(3).to_string())
     return out
 
 

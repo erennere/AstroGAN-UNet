@@ -52,8 +52,8 @@ def train_result(run_dir: Path) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
-def train(cfg: Config, image_root: Path | None = None) -> Path:
-    """Train (or resume) the run of `cfg`; `image_root` is where the FITS files are read from."""
+def train(cfg: Config) -> Path:
+    """Train (or resume) the run of `cfg`."""
     import tensorflow as tf
 
     from astrounets.models import build, optimizers
@@ -77,7 +77,7 @@ def train(cfg: Config, image_root: Path | None = None) -> Path:
         val_rows = crops[crops["split"] == "val"].reset_index(drop=True)
         if train_rows.empty or val_rows.empty:
             raise RuntimeError("no usable train or val crops; check dataset and noise settings")
-        store = CropStore(image_root or cfg.mast_dir, cfg.dataset.hdu)
+        store = CropStore(cfg.mast_dir, cfg.dataset.hdu, cfg.dataset.weight_hdu)
         val = fixed_set(val_rows, store, cfg, cfg.train.val_samples, VAL_SEED)
         log.info("run %s: %d train crops, %d val crops, %d fixed val samples",
                  run, len(train_rows), len(val_rows), len(val["x"]))

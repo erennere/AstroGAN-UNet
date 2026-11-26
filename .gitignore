@@ -1,4 +1,7 @@
 /.venv/
+/.tools/
+/setup-*.log
+/workflow-*.log
 /.vscode/
 /data/
 /runs/
