@@ -57,17 +57,17 @@ def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = Non
     for start in range(0, len(records), e.batch_size):
         batch = []
         for row in records[start:start + e.batch_size]:
-            clean, noisy = noisy_pair(store, row, row["ratio"], row["noise_seed"], ps)
+            clean, noisy, hole = noisy_pair(store, row, row["ratio"], row["noise_seed"], ps)
             params = scaler.fit(noisy)
             if params is not None:
-                batch.append((row, clean, noisy, params))
+                batch.append((row, clean, noisy, hole, params))
         if not batch:
             continue
-        x = np.stack([scaler.forward(noisy, params)[..., None] for _, _, noisy, params in batch])
+        x = np.stack([scaler.forward(noisy, params)[..., None] for _, _, noisy, _, params in batch])
         pred = np.asarray(model(x, training=False))[..., 0]
-        for (row, clean, noisy, params), p in zip(batch, pred):
+        for (row, clean, noisy, hole, params), p in zip(batch, pred):
             rec = scaler.inverse(p, params)
-            rec[noisy == 0] = 0.0  # no-data pixels stay empty, as in the inputs
+            rec[hole] = clean[hole]  # no-data pixels: the same flat background in all three images
             threshold = e.detect_nsigma * noisy_sigma(row["sigma"], row["ratio"])
             sample, src = compare(clean, noisy, rec, threshold, e, row["photflam"], row["photplam"])
             ids = {"sample_id": row["sample_id"], "crop_id": row["crop_id"], "image_id": row["image_id"], "ratio": row["ratio"]}

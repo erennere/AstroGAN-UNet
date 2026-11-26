@@ -498,9 +498,15 @@ _IDENTITY_IGNORED = {
 }
 
 
+# Raised whenever code changes what a run sees, so that runs of the old code are never resumed or reused
+# (2: no-data pixels filled with the crop background instead of 0).
+DATA_VERSION = 2
+
+
 def identity_hash(cfg: Config) -> str:
     data = _resolved(cfg)
     ident = {key: data[key] for key in _IDENTITY_SECTIONS}
+    ident["data_version"] = DATA_VERSION
     if cfg.model.type != "gan":
         ident.pop("gan")
     for section, keys in _IDENTITY_IGNORED.items():

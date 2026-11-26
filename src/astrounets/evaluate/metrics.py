@@ -48,13 +48,13 @@ def compare(clean: np.ndarray, noisy: np.ndarray, rec: np.ndarray, threshold: fl
     sources = pd.DataFrame({
         "x": true["x"].to_numpy(float), "y": true["y"].to_numpy(float),
         "flux_true": true["flux"].to_numpy(float), "radius_true": true["radius"].to_numpy(float),
-        "ellipticity_true": true["ellipticity"].to_numpy(float),
+        "kron_radius_true": true["kron_radius"].to_numpy(float), "ellipticity_true": true["ellipticity"].to_numpy(float),
     })
     sources["mag_true"] = ab_mag(sources["flux_true"], photflam, photplam)
     sample = {"n_true": len(true), "range": float(clean.max() - clean.min())}
     for kind, cat in found.items():
         i_true, i_found = match(true[["x", "y"]].to_numpy(), cat[["x", "y"]].to_numpy(), e.match_radius)
-        for col in ("flux", "radius", "ellipticity"):
+        for col in ("flux", "radius", "kron_radius", "ellipticity"):
             values = np.full(len(sources), np.nan)
             values[i_true] = cat[col].to_numpy(float)[i_found]
             sources[f"{col}_{kind}"] = values

@@ -119,8 +119,11 @@ the same model.
   WFC3 calibration star clusters, stay in one split.
 - **No-data pixels.** Empty and non-finite pixels, and pixels whose drizzle weight (`WHT`) is below
   `dataset.min_weight_fraction` (0.5) of the image's median weight, count as no data: the WFC3/IR
-  "death star" and partly covered edges would otherwise enter training and evaluation as sky. No-data
-  pixels get no noise, and reconstructions are set to 0 there.
+  "death star", partly covered edges and pixels where exposures were rejected. They are set to the
+  crop's background level in both the deep and the noisy image, without noise, so the network sees
+  flat empty sky there; in evaluation they hold that same value in all three images. (Kept at 0, as
+  until November 2026, they lay ~20 sigma below the sky: the network smeared them into dark blobs and
+  they set the minimum of the min_max and log_min_max scalings. 73 % of all crops contain some.)
 - **Noise.** The pixel noise sigma of a crop is *measured* as the robust spread (1.4826 x MAD) of its
   empty-sky pixels around the photutils `Background2D` background; sources are masked first (pixels
   2 sigma above the background after 2-px smoothing, grown by 5 px). It is checked against the noise

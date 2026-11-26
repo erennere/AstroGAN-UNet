@@ -283,7 +283,8 @@ def test_atomic_write_leaves_nothing_on_failure(tmp_path):
 
 
 def test_low_weight_pixels_are_no_data(mock_data):
-    """The mock "death star" (drizzle weight ~0, junk pixel values) must never reach training or evaluation."""
+    """The mock "death star" (drizzle weight ~0, junk pixel values) must never reach training or evaluation:
+    it is no data, which the network sees as flat background in both images, without noise."""
     from astrounets.data.fits_io import read_weight
     from astrounets.data.pairs import noisy_pair
 
@@ -301,10 +302,32 @@ def test_low_weight_pixels_are_no_data(mock_data):
         assert (masked[low] == 0).all() and np.array_equal(masked[~low], raw[~low])
         if low.any() and (raw[low] != 0).any():
             hit += 1
-            clean, noisy = noisy_pair(store, row.to_dict(), 8.0, 0, 64)
-            assert (noisy[low] == 0).all()
+            clean, noisy, hole = noisy_pair(store, row.to_dict(), 8.0, 0, 64)
+            assert hole[low].all()  # the dead patch is no data ...
+            assert (clean[low] == np.float32(row["sky"])).all() and (noisy[low] == clean[low]).all()  # ... flat sky
             assert row["valid_fraction"] <= 1 - low.mean() + 1e-9
     assert hit >= 1, "the dead patch lies in at least one usable crop"
+
+
+def test_no_data_pixels_are_flat_background_for_the_network(mock_data):
+    """Zeros far below the sky would be extreme outliers after scaling; filled with the crop's
+    background they sit at the sky level and do not set the min_max range."""
+    from astrounets.data.pairs import noisy_pair
+    from astrounets.data.scaling import Scaler
+
+    crops = load_crops(mock_data)
+    store = CropStore(mock_data.mast_dir, "SCI", "WHT")
+    checked = 0
+    for row in crops[crops["valid_fraction"] < 0.99].head(5).to_dict("records"):
+        clean, noisy, hole = noisy_pair(store, row, 16.0, 1, 64)
+        assert hole.any() and np.isfinite(clean).all() and np.isfinite(noisy).all()
+        z = Scaler("z_scale").forward(noisy, Scaler("z_scale").fit(noisy))
+        assert np.abs(z[hole]).max() < 3  # at the sky level, not ~ -20 sigma
+        lo, hi = Scaler("min_max").fit(noisy)
+        assert lo == noisy[~hole].min()  # the minimum comes from the data, not from a hole
+        checked += 1
+    store.close()
+    assert checked > 0
 
 
 def test_weight_cut_can_be_switched_off(mock_data, tmp_path):

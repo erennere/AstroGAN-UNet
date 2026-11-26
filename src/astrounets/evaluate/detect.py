@@ -7,7 +7,7 @@ import sep
 
 from astrounets.config import Eval
 
-COLUMNS = ["x", "y", "flux", "a", "b", "theta", "radius", "ellipticity"]
+COLUMNS = ["x", "y", "flux", "a", "b", "theta", "radius", "kron_radius", "ellipticity"]
 sep.set_extract_pixstack(2_000_000)
 sep.set_sub_object_limit(4096)
 
@@ -26,7 +26,8 @@ def measure(image: np.ndarray, threshold: float, e: Eval, back: np.ndarray | Non
     `back` is the background map to subtract; by default the image's own. To compare images of the
     same sky, pass one map (from the deep image) to every call: separately estimated backgrounds
     absorb more of the faint outer light of sources the noisier an image is, which biases fluxes.
-    Returns positions, Kron flux, shape (a, b, theta), half-light radius and ellipticity 1 - b/a.
+    Returns positions, Kron flux, shape (a, b, theta), half-light radius, circularised Kron radius
+    (pixels) and ellipticity 1 - b/a.
     """
     data = np.ascontiguousarray(image, dtype=np.float64)
     back = background(data, e) if back is None else back
@@ -59,6 +60,8 @@ def measure(image: np.ndarray, threshold: float, e: Eval, back: np.ndarray | Non
         k = use_circle
         flux[k], _, _ = sep.sum_circle(sub, x[k], y[k], e.min_radius, subpix=1)
     radius, _ = sep.flux_radius(sub, x, y, e.kron_radius_factor * a, 0.5, normflux=np.where(flux > 0, flux, np.nan), subpix=5)
+    # circularised Kron radius in pixels (the aperture used for the flux): kron x sqrt(a b), or the circle
+    kron_radius = np.where(use_circle, e.min_radius, kron * np.sqrt(a * b))
     a, b = np.where(shape_ok, a, np.nan), np.where(shape_ok, b, np.nan)
     return pd.DataFrame({"x": x, "y": y, "flux": flux, "a": a, "b": b, "theta": theta,
-                         "radius": radius, "ellipticity": 1.0 - b / a})
+                         "radius": radius, "kron_radius": kron_radius, "ellipticity": 1.0 - b / a})

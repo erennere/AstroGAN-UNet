@@ -200,6 +200,7 @@ class RunRecorder(keras.callbacks.Callback):
         rows = []
         for i in range(k):
             rec = scaler.inverse(pred[i], self.val["params"][i])
-            rec[self.val["noisy"][i] == 0] = 0.0
+            hole = self.val["hole"][i]  # no-data pixels: the background level, as in the inputs
+            rec[hole] = self.val["clean"][i][hole]
             rows.append((self.val["noisy"][i], rec, self.val["clean"][i]))
         self.save_triptychs(self.run / "previews" / f"epoch_{done:04d}.png", rows, self.cfg.plots.dpi)
