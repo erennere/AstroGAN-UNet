@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -90,6 +91,17 @@ def test_is_alive_ignores_other_processes():
     assert not is_alive(2 ** 22 + 12345)
 
 
+def _failed_job_logs(state: Path, lines: int = 40) -> str:
+    """The end of the log of every failed stand-in SLURM job, for the assertion message."""
+    text = ""
+    for path in sorted(state.glob("*.json")):
+        job = json.loads(path.read_text())
+        if job.get("state") == "FAILED" and job.get("log") and Path(job["log"]).exists():
+            tail = Path(job["log"]).read_text(errors="replace").splitlines()[-lines:]
+            text += f"\n----- job {job['id']} ({job['name']}) -----\n" + "\n".join(tail)
+    return text
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(os.name == "nt", reason="the fake SLURM uses POSIX shells")
 def test_slurm_profile_runs_the_whole_workflow(tmp_path, monkeypatch):
@@ -106,7 +118,7 @@ def test_slurm_profile_runs_the_whole_workflow(tmp_path, monkeypatch):
     command = snakemake_command(freeze(cfg), "slurm", None, dry_run=False)
     command += ["--slurm-init-seconds-before-status-checks", "2"]
     out = subprocess.run(command, cwd=workflow_dir(cfg), capture_output=True, text=True, timeout=1200)
-    assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-3000:]
+    assert out.returncode == 0, out.stderr[-3000:] + _failed_job_logs(state)
 
     jobs = [json.loads(p.read_text()) for p in sorted(state.glob("*.json"))]
     gpu = [j for j in jobs if j["partition"] == "gpu-single"]

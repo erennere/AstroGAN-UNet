@@ -7,12 +7,13 @@ The Python package and command are called `astrounets`.
 
 ## On bwForCluster Helix (everything as SLURM jobs)
 
-The repository is [erennere/AstroGAN-UNet](https://github.com/erennere/AstroGAN-UNet). Put `data/` and
-`runs/` on a workspace (the download is about 155 GB; `$HOME` holds 200 GB):
+The repository is [erennere/AstroGAN-UNet](https://github.com/erennere/AstroGAN-UNet). Clone it where
+there is room (the download is about 155 GB), for example into your SDS@hd space, which Helix mounts
+under /mnt/sds-hd/ on login and compute nodes. Everything is run from the repository folder; `data/`,
+`runs/` and `.venv/` are created inside it.
 
 ```
 git clone https://github.com/erennere/AstroGAN-UNet.git && cd AstroGAN-UNet
-ln -s <workspace>/data data && ln -s <workspace>/runs runs
 sbatch workflow/helix/setup.sbatch       # once: .venv (no modules), GPU check, tests -> setup-<id>.log
 sbatch workflow/helix/run.sbatch         # the study -> workflow-<id>.log
 .venv/bin/astrounets status              # progress of each stage

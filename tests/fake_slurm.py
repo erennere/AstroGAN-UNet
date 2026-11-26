@@ -3,7 +3,9 @@
 `install(bin_dir, state_dir)` writes executables sbatch, srun, sacct, squeue, scancel, scontrol,
 sacctmgr and sshare into bin_dir. sbatch runs the job in the background on this machine with
 SLURM_JOB_ID and a per-job TMPDIR set (as SLURM does); #SBATCH lines in a submitted script are read;
-sacct and squeue report job states.
+sacct and squeue report job states. Jobs run side by side on this one machine, so GPUs are hidden from
+them: several TensorFlow processes on one GPU would fight over its memory (on a cluster every job has
+a GPU of its own).
 """
 from __future__ import annotations
 
@@ -82,14 +84,14 @@ def sbatch(state: Path, args: list[str]) -> int:
     tmp = state / "tmp" / str(job_id)
     tmp.mkdir(parents=True)
     env = dict(os.environ, SLURM_JOB_ID=str(job_id), TMPDIR=str(tmp), SLURM_CPUS_PER_TASK="2",
-               SLURM_SUBMIT_DIR=os.getcwd())
+               SLURM_SUBMIT_DIR=os.getcwd(), CUDA_VISIBLE_DEVICES="")
     (state / f"{job_id}.json").write_text(json.dumps(record))
     runner = (f"{shlex.quote(sys.executable)} {shlex.quote(str(Path(__file__).resolve()))} _run "
               f"{shlex.quote(str(state))} {job_id}")
     with open(log, "ab") as out:
         proc = subprocess.Popen(["/bin/sh", "-c", runner], stdout=out, stderr=subprocess.STDOUT, env=env,
                                 cwd=opts.get("-D"), start_new_session=True)
-    record["pid"] = proc.pid
+    record["pid"], record["log"] = proc.pid, str(Path(log).resolve())
     (state / f"{job_id}.json").write_text(json.dumps(record))
     print(job_id)
     return 0
