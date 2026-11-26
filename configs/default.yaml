@@ -43,6 +43,8 @@ mast:
     train: 60
     val: 20
     test: 20
+  split_per_program: true  # tiles are shared out within each observing program (PI) with 3+ tiles, so big
+                           # programs (PHAT, Orion, CLASH, CANDELS, ...) are in every split; the rest together
 
 # ---- dataset: which images to use and how they are cut ------------------------------------------
 dataset:
@@ -126,6 +128,8 @@ train:
   lr_drops: [0.75]         # after these fractions of the epochs the rate is multiplied by lr_drop_factor
   lr_drop_factor: 0.5
   patience: null           # stop after this many epochs without a better validation loss (null = never)
+  max_crowded_share: 0.25  # at most this share of training and validation-loss samples are crowded crops
+                           # (as in ranking.groups: sparse 3, crowded 1); 1 = draw every crop equally
   augment: true            # random 90-degree rotations and flips
   preview_every: 10
   preview_samples: 4

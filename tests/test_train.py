@@ -8,7 +8,7 @@ from astrounets.config import ConfigError, replace
 from astrounets.data.dataset import load_crops
 from astrounets.data.fits_io import CropStore
 from astrounets.data.noise import usable
-from astrounets.data.pairs import fixed_set, training_stream
+from astrounets.data.pairs import draw_weights, fixed_set, training_stream
 from astrounets.train import train, train_result
 
 
@@ -121,3 +121,26 @@ def test_diverged_run_stops_and_keeps_its_last_good_state(mock_data, monkeypatch
     result = train_result(run)
     assert result["status"] == "diverged" and result["epochs"] == 1 and result["best_epoch"] == 1
     assert pd.read_csv(run / "history.csv")["epoch"].tolist() == [1]
+
+
+def test_crowded_crops_are_capped_in_training_draws():
+    rows = pd.DataFrame({"crowded": [True] * 60 + [False] * 40})
+    w = draw_weights(rows, 0.25)
+    assert w.sum() == pytest.approx(1.0) and w[:60].sum() == pytest.approx(0.25)
+    assert len(set(w[:60])) == 1 and len(set(w[60:])) == 1  # equal within each group
+    few = pd.DataFrame({"crowded": [True] * 10 + [False] * 90})
+    assert draw_weights(few, 0.25)[:10].sum() == pytest.approx(0.10)  # a cap, not a quota
+    assert draw_weights(rows, 1.0)[:60].sum() == pytest.approx(0.60)  # 1 = every crop equally
+    for only in (pd.DataFrame({"crowded": [False] * 5}), pd.DataFrame({"crowded": [True] * 5}), pd.DataFrame({"x": [1] * 5})):
+        assert np.allclose(draw_weights(only, 0.25), 0.2)
+
+
+def test_draws_on_the_mock_sky_follow_the_cap(mock_data):
+    crops = usable(load_crops(mock_data), mock_data.noise)
+    rows = crops[crops["split"] == "train"].reset_index(drop=True)
+    assert rows["crowded"].mean() > 0.1
+    capped = replace(mock_data, {"train": {"max_crowded_share": 0.05}})
+    w = draw_weights(rows, capped.train.max_crowded_share)
+    rng = np.random.default_rng(0)
+    drawn = rows["crowded"].to_numpy()[rng.choice(len(rows), size=20000, p=w)]
+    assert drawn.mean() == pytest.approx(0.05, abs=0.01)

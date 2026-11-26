@@ -78,6 +78,7 @@ class Mast:
     tile_arcmin: float
     overlap_arcmin: float
     split: Split
+    split_per_program: bool
 
 
 @dataclass(frozen=True)
@@ -161,6 +162,7 @@ class Train:
     lr_drops: list[float]
     lr_drop_factor: float
     patience: int | None
+    max_crowded_share: float
     augment: bool
     preview_every: int
     preview_samples: int
@@ -517,7 +519,7 @@ def dataset_key(cfg: Config) -> str:
     data = _resolved(cfg)
     dataset = {k: v for k, v in data["dataset"].items() if k != "workers"}
     mast = {k: data["mast"][k] for k in ("mock", "mock_images", "mock_image_size", "query", "product_suffix",
-                                         "tile_arcmin", "overlap_arcmin", "split")}
+                                         "tile_arcmin", "overlap_arcmin", "split", "split_per_program")}
     return _hash({"dataset": dataset, "mast": mast, "seed": data["seed"]})
 
 
@@ -586,6 +588,7 @@ def validate(cfg: Config) -> None:
          "model.output_activation sigmoid needs a bounded scaling (min_max or log_min_max)")
     need(t.epochs >= 1 and t.batch_size >= 1 and t.val_samples >= 1, "train: epochs, batch_size, val_samples must be >= 1")
     need(t.samples_per_epoch >= t.batch_size, "train.samples_per_epoch must be >= train.batch_size")
+    need(0 <= t.max_crowded_share <= 1, "train.max_crowded_share must be in [0, 1]")
     need(t.preview_every >= 1 and t.loader_workers >= 1, "train: preview_every and loader_workers must be >= 1")
     need(t.learning_rate > 0, "train.learning_rate must be positive")
     need(all(0 < f < 1 for f in t.lr_drops) and t.lr_drops == sorted(set(t.lr_drops)),

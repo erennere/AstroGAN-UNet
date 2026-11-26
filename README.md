@@ -111,7 +111,12 @@ the same model.
   validation or test, with one assignment shared by every dataset. Validation and test images whose
   centre lies within `mast.overlap_arcmin` (3.1', a WFC3/IR footprint diagonal) of an image in an earlier
   split are dropped, so no patch of sky is in two splits. (Grouping whole contiguous fields instead
-  would put all MOMCHEVA F160W images, which share one field, into a single split.)
+  would put all MOMCHEVA F160W images, which share one field, into a single split.) Tiles are shared
+  out within each observing program (`mast.split_per_program`): a tile belongs to the PI with most
+  images in it, and every program with 3+ tiles is split 60/20/20 on its own (the others together),
+  so big programs such as PHAT, Orion, SH0ES, CLASH, CANDELS and 3D-HST appear in all three splits
+  (with one global draw PHAT was 458/31/174 train/val/test). Programs on a single tile, such as the
+  WFC3 calibration star clusters, stay in one split.
 - **No-data pixels.** Empty and non-finite pixels, and pixels whose drizzle weight (`WHT`) is below
   `dataset.min_weight_fraction` (0.5) of the image's median weight, count as no data: the WFC3/IR
   "death star" and partly covered edges would otherwise enter training and evaluation as sky. No-data
@@ -139,6 +144,11 @@ the same model.
   Evaluation sets draw up to `eval.n_crops` crops from each group, so the crowded numbers do not rest
   on a handful of crops, and every evaluation reports both groups and all crops together (`groups` in
   summary.json, `<measure>_<group>` columns in the result tables; `overall` mixes the groups as drawn).
+- **Training mix.** Training draws crops at random, at most `train.max_crowded_share` (25 %) of them
+  crowded and the rest sparse, each crop equally likely within its group (the natural share is used
+  when it is lower, e.g. for FABER and MOMCHEVA). The fixed validation set that picks the best
+  checkpoint is drawn the same way. Without the cap, crowded fields, large mosaics and repeatedly
+  observed star clusters would take whatever share their crop counts give them (56 % in the pilot).
 - **Scaling** (`none`, `z_scale`, `min_max`, `log_min_max`) is fitted on the noisy input only and the
   same parameters are used for the target and to invert the prediction.
 - **Validation** uses a fixed set (`train.val_samples`) that is identical every epoch; the best

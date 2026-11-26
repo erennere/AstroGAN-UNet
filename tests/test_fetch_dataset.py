@@ -9,7 +9,7 @@ import pytest
 from astrounets.data.dataset import build_dataset, load_crops, select_images
 from astrounets.data.fits_io import CropStore, read_image, write_image
 from astrounets.config import replace as replace_cfg
-from astrounets.data.mast import apply_buffer, assign_splits, assign_tiles, download
+from astrounets.data.mast import apply_buffer, assign_splits, assign_splits_per_program, assign_tiles, download
 from conftest import smoke_config
 
 
@@ -32,6 +32,26 @@ def test_splits_keep_tiles_whole_and_fill_every_split():
     assert set(share.index) == {"train", "val", "test"}
     assert share["train"] == pytest.approx(0.6, abs=0.05) and share["test"] == pytest.approx(0.2, abs=0.05)
     assert np.array_equal(split, assign_splits(tiles, {"train": 60, "val": 20, "test": 20}, seed=1))
+
+
+def test_big_programs_are_in_every_split_and_tiles_stay_whole():
+    """A program observing a few patches of sky (here 10 tiles) is shared out over train, val and test
+    instead of landing wherever the global draw puts its tiles; small programs are split together."""
+    rng = np.random.default_rng(3)
+    big = pd.DataFrame({"tile": np.repeat(np.arange(10), 30), "pi": "DALCANTON"})        # 10 tiles, 300 images
+    small = pd.DataFrame({"tile": 100 + np.arange(60), "pi": [f"P{i}" for i in range(60)]})  # 60 one-tile programs
+    mixed = pd.DataFrame({"tile": [0, 0, 5], "pi": ["OTHER", "OTHER", "OTHER"]})          # minor guests in big tiles
+    table = pd.concat([big, small, mixed], ignore_index=True).sample(frac=1.0, random_state=1)
+    shares = {"train": 60, "val": 20, "test": 20}
+    split = assign_splits_per_program(table["tile"].to_numpy(), table["pi"].to_numpy(), shares, seed=4)
+    table["split"] = split
+    assert (table.groupby("tile")["split"].nunique() == 1).all()
+    assert set(table.loc[table["pi"] == "DALCANTON", "split"]) == {"train", "val", "test"}
+    assert set(table.loc[table["pi"].str.startswith("P"), "split"]) == {"train", "val", "test"}
+    again = assign_splits_per_program(table["tile"].to_numpy(), table["pi"].to_numpy(), shares, seed=4)
+    assert np.array_equal(split, again)
+    big_share = table.loc[table["pi"] == "DALCANTON", "split"].value_counts(normalize=True)
+    assert big_share["train"] == pytest.approx(0.6, abs=0.11)
 
 
 def test_splits_need_three_tiles():

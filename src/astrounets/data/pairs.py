@@ -45,10 +45,23 @@ def scaled(scaler: Scaler, clean: np.ndarray, noisy: np.ndarray):
     return scaler.forward(noisy, params)[..., None], scaler.forward(clean, params)[..., None], params
 
 
+def draw_weights(rows: pd.DataFrame, max_crowded_share: float) -> np.ndarray:
+    """Probability of drawing each crop: crowded crops get min(their share, max_crowded_share) of the
+    draws, sparse crops the rest; within each group every crop is equally likely."""
+    n = len(rows)
+    crowded = rows["crowded"].to_numpy(bool) if "crowded" in rows else np.zeros(n, bool)
+    n_crowded = int(crowded.sum())
+    if n_crowded in (0, n):
+        return np.full(n, 1.0 / n)
+    share = min(n_crowded / n, max_crowded_share)
+    return np.where(crowded, share / n_crowded, (1.0 - share) / (n - n_crowded))
+
+
 def training_stream(rows: pd.DataFrame, store: CropStore, cfg: Config, start_epoch: int):
     """Endless stream of scaled (x, y) training pairs; epoch k uses seed (cfg.seed, k)."""
     scaler = Scaler(cfg.scaling.mode, cfg.scaling.log_clip_max)
     records = rows.to_dict("records")
+    weights = draw_weights(rows, cfg.train.max_crowded_share)
     size, block = cfg.dataset.patch_size, 4 * cfg.train.batch_size
 
     def make(item):
@@ -63,7 +76,7 @@ def training_stream(rows: pd.DataFrame, store: CropStore, cfg: Config, start_epo
         for epoch in itertools.count(start_epoch):
             rng = np.random.default_rng([cfg.seed, epoch])
             n = cfg.train.samples_per_epoch
-            index = rng.integers(0, len(records), n)
+            index = rng.choice(len(records), size=n, p=weights)
             ratios = [sample_ratio(rng, records[i]["exptime"], cfg.noise) for i in index]
             seeds = rng.integers(0, 2**63 - 1, n)
             items = list(zip(index, ratios, seeds))
@@ -74,15 +87,17 @@ def training_stream(rows: pd.DataFrame, store: CropStore, cfg: Config, start_epo
 
 
 def fixed_set(rows: pd.DataFrame, store: CropStore, cfg: Config, n: int, seed: int) -> dict:
-    """A deterministic set of scaled pairs (validation): same arrays every time it is built."""
+    """A deterministic set of scaled pairs (validation): same arrays every time it is built. Crops are
+    drawn with the same crowded share as in training."""
     scaler = Scaler(cfg.scaling.mode, cfg.scaling.log_clip_max)
     rng = np.random.default_rng(seed)
     records = rows.to_dict("records")
+    weights = draw_weights(rows, cfg.train.max_crowded_share)
     xs, ys, params, cleans, noisys = [], [], [], [], []
     tries = 0
     while len(xs) < n and tries < 10 * n:
         tries += 1
-        row = records[int(rng.integers(len(records)))]
+        row = records[int(rng.choice(len(records), p=weights))]
         ratio = sample_ratio(rng, row["exptime"], cfg.noise)
         clean, noisy = noisy_pair(store, row, ratio, int(rng.integers(2**63 - 1)), cfg.dataset.patch_size)
         result = scaled(scaler, clean, noisy)

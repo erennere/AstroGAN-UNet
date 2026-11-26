@@ -145,9 +145,9 @@ def assign_tiles(ra: np.ndarray, dec: np.ndarray, tile_arcmin: float) -> np.ndar
     return band * 1_000_000 + cell
 
 
-def assign_splits(groups: np.ndarray, shares: dict[str, int], seed: int) -> np.ndarray:
+def assign_splits(groups: np.ndarray, shares: dict[str, int], seed) -> np.ndarray:
     """Give whole groups (tiles) to train/val/test, biggest first, always to the split furthest below
-    its target share. Deterministic for a given seed."""
+    its target share. Deterministic for a given seed (an int or a sequence of ints)."""
     groups = np.asarray(groups)
     ids, counts = np.unique(groups, return_counts=True)
     if len(ids) < 3:
@@ -169,6 +169,28 @@ def assign_splits(groups: np.ndarray, shares: dict[str, int], seed: int) -> np.n
         group_split[ids[idx]] = choice
         filled[choice] += counts[idx]
     return np.array([group_split[g] for g in groups], dtype=object)
+
+
+def assign_splits_per_program(tiles: np.ndarray, programs: np.ndarray, shares: dict[str, int], seed: int,
+                              min_tiles: int = 3) -> np.ndarray:
+    """Tiles to splits within each observing program, so that big programs are in every split.
+
+    A tile belongs to the program with the most images in it (ties: alphabetical). Programs with at least
+    `min_tiles` tiles are split on their own with assign_splits; the tiles of all other programs are split
+    together. Whole tiles still go to one split, so no sky is shared."""
+    frame = pd.DataFrame({"tile": np.asarray(tiles), "program": pd.Series(programs).astype(str).str.upper().to_numpy()})
+    counts = frame.groupby(["tile", "program"]).size().reset_index(name="n")
+    counts = counts.sort_values(["tile", "n", "program"], ascending=[True, False, True])
+    owner = counts.drop_duplicates("tile").set_index("tile")["program"]
+    tiles_per_program = owner.value_counts()
+    stratum = owner.where(owner.map(tiles_per_program) >= min_tiles, "")  # "" = the small programs together
+    if (stratum == "").sum() < 3:  # too few leftover tiles to fill three splits: join the biggest program
+        stratum = stratum.replace("", tiles_per_program.index[0])
+    split_of_tile = {}
+    for k, name in enumerate(sorted(stratum.unique())):
+        own = frame[frame["tile"].isin(stratum.index[stratum == name])]
+        split_of_tile.update(zip(own["tile"], assign_splits(own["tile"].to_numpy(), shares, [seed, k])))
+    return np.array([split_of_tile[t] for t in frame["tile"]], dtype=object)
 
 
 def apply_buffer(ra, dec, split: np.ndarray, overlap_arcmin: float) -> np.ndarray:
@@ -240,7 +262,11 @@ def fetch(cfg: Config, refresh: bool = False) -> Path:
         table = query_metadata(cfg)
         table["url"], table["path"] = None, None
     table["tile"] = assign_tiles(table["ra"], table["dec"], m.tile_arcmin)
-    split = assign_splits(table["tile"], {"train": m.split.train, "val": m.split.val, "test": m.split.test}, cfg.seed)
+    shares = {"train": m.split.train, "val": m.split.val, "test": m.split.test}
+    if m.split_per_program:
+        split = assign_splits_per_program(table["tile"].to_numpy(), table["pi"].to_numpy(), shares, cfg.seed)
+    else:
+        split = assign_splits(table["tile"], shares, cfg.seed)
     table["split"] = apply_buffer(table["ra"], table["dec"], split, m.overlap_arcmin)
     if m.download and not m.mock:
         todo = choose_downloads(table, cfg)
