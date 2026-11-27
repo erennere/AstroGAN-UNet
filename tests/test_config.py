@@ -41,6 +41,7 @@ def test_types_are_checked():
 @pytest.mark.parametrize("override, message", [
     (["train.loss=ssim", "scaling.mode=z_scale"], "ssim needs a bounded scaling"),
     (["train.loss=ssim", "scaling.mode=none"], "ssim needs a bounded scaling"),
+    (["train.loss=ssim", "scaling.mode=robust_z"], "ssim needs a bounded scaling"),
     (["model.output_activation=sigmoid"], "sigmoid needs a bounded scaling"),
     (["model.depth=6", "dataset.patch_size=48"], "divisible"),
     (["mast.split={train: 50, val: 20, test: 20}"], "sum to 100"),

@@ -50,6 +50,13 @@ eval:
   bkg_box_size: 32
   n_examples: 3
 
+denoise:
+  overlap: 16
+  zoom: 64
+
+plots:
+  hexbins: false           # 100+ figures per evaluation take minutes; checked by their own test
+
 ranking:
   guard: false             # two-epoch models never beat the noisy input; rank them anyway
 
@@ -69,3 +76,6 @@ workflow:
   datasets:
     train_on: [mock, mock-faber]
     evaluate: [mock:test, mock-faber:test]
+  final:
+    train_on: mock
+    select_on: mock:val

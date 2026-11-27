@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 import pytest
 
@@ -9,7 +11,8 @@ def test_help_lists_every_command(capsys):
     with pytest.raises(SystemExit):
         main(["--help"])
     out = capsys.readouterr().out
-    for command in ("workflow", "status", "stop", "fetch", "dataset", "train", "evaluate", "plots", "run", "info", "smoke"):
+    for command in ("workflow", "status", "stop", "fetch", "dataset", "train", "evaluate", "plots", "run", "info", "smoke",
+                    "report", "denoise"):
         assert command in out
 
 
@@ -49,6 +52,20 @@ def test_smoke_runs_the_whole_workflow(tmp_path):
     assert crowded.loc["mock:test"].notna().all() and crowded.loc["mock-faber:test"].isna().all()
     assert "mock-faber" in table and "flux_scatter_crowded" in table
     assert len(list(work.glob("*/done/*/*.json"))) == 2 + 2 + 2
+    report = work / "report"
+    index = (report / "index.txt").read_text()
+    for name in ("ranking.png", "tuning.png", "results_flux_scatter.png", "results_completeness_gain.png",
+                 "tables/results_by_group.csv"):
+        assert (report / name).exists() and name in index, name
+    assert len(list((report / "models").glob("*/*/best.keras"))) == 2  # one final model per training dataset
+    final = json.loads((work / "final" / "final.json").read_text())
+    assert final["train_on"] == "mock" and final["selected_on"] == "mock:val" and final["run"].startswith("mock/")
+    assert (runs / final["run"] / "eval" / "mock_val" / "summary.json").exists(), "chosen on the validation split"
+    assert (report / "tables" / "final.json").exists() and final["run"] in index
+    denoised = sorted(p.name for p in (tmp_path / "denoised").iterdir())
+    assert denoised == ["mock0000_drz_compare.png", "mock0000_drz_rec.fits"] and "final model" in table
+    by_group = pd.read_csv(report / "tables" / "results_by_group.csv")
+    assert {"sparse", "crowded"} <= set(by_group["group"])
     assert len(list(runs.glob("*/*/eval/*/plots/*.png"))) >= 4 * 4 + 2 * 4
     assert not list(tmp_path.rglob(".*.tmp*")), "no temporary files are left behind"
     # a second start finds everything done and changes nothing

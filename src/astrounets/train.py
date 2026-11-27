@@ -37,11 +37,17 @@ VAL_SEED = 1
 
 
 def _check_run_folder(cfg: Config) -> None:
+    """Refuse a run folder that holds another setup. The saved config may predate fields added to the
+    configuration since (a study stopped, updated and started again): those come from `cfg`, so only
+    what the run was trained with is compared."""
     saved = cfg.run_dir / "config.yaml"
     if saved.exists():
-        from astrounets.config import from_dict
+        from astrounets.config import _deep_merge, from_dict, to_dict
 
-        other = from_dict(read_yaml(saved), cfg.root)
+        try:
+            other = from_dict(_deep_merge(to_dict(cfg), read_yaml(saved)), cfg.root)
+        except ConfigError as err:
+            raise ConfigError(f"{saved} cannot be read with this version of astrounets: {err}") from None
         if identity_hash(other) != cfg.run_hash:
             raise ConfigError(f"{saved} belongs to a different setup; refusing to mix runs")
 

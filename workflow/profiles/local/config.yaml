@@ -3,5 +3,5 @@
 cores: 1
 keep-going: true          # a failed run does not stop the others; start again to retry it
 rerun-incomplete: true    # jobs cut off by a stop or crash are run again (training resumes)
-rerun-triggers: [mtime]
+rerun-triggers: [mtime, input]   # input: a summary reruns when its set of runs changes (grid edited mid-study)
 latency-wait: 5

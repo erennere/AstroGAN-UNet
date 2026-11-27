@@ -28,10 +28,22 @@ def _fake_ranking(cfg, order=None):
 def test_stage1_is_every_valid_combination(tmp_path):
     cfg = _study(tmp_path)
     runs, skipped = stage_runs(cfg, "models")
-    assert len(runs) == 56 and len(skipped) == 8
+    assert len(runs) == 68 and len(skipped) == 12
     assert all(setup["train"]["loss"] == "ssim" for setup, _ in skipped)
-    assert len({r.key for r in runs}) == 56 and all(r.key.startswith("all/") for r in runs)
+    assert len({r.key for r in runs}) == 68 and all(r.key.startswith("all/") for r in runs)
     assert all(r.cfg.train.epochs == 20 and r.targets == [("all", "val")] for r in runs)
+
+
+def test_a_new_scaling_mode_adds_runs_and_keeps_the_others(tmp_path):
+    """Adding robust_z to the grid mid-study: the runs of the other modes keep their folders (they resume
+    or are reused), the new mode only adds runs."""
+    cfg = _study(tmp_path)
+    without = _study(tmp_path, "workflow.models.grid={model.type: [unet, gan], model.attention: [false, true], "
+                               "scaling.mode: [none, z_scale, min_max, log_min_max], "
+                               "train.loss: [log_cosh, simae, mae, ssim]}")
+    old, new = {r.key for r in stage_runs(without, "models")[0]}, {r.key for r in stage_runs(cfg, "models")[0]}
+    assert len(old) == 56 and old <= new
+    assert len(new - old) == 12 and all("_robust_z_" in key for key in new - old)
 
 
 def test_tune_stage_tries_every_rate_for_the_top_setups(tmp_path):

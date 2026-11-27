@@ -2,7 +2,7 @@
 # background and continues where it stopped); the stages are described in src/astrounets/workflow.py.
 #
 #   fetch -> dataset (once per name) -> models runs -> ranking -> tune runs -> choice
-#         -> datasets runs -> results
+#         -> datasets runs -> results -> final -> report
 #
 # Every run is one job: train (resuming from its checkpoint), evaluate, plot. All paths are
 # absolute; Snakemake's own files (.snakemake/, SLURM logs) live in runs/_workflow.
@@ -22,11 +22,11 @@ wildcard_constraints:
     run="[^/]+",
 
 # fetch and the summaries run in the workflow's own process (on Helix: the run.sbatch job).
-localrules: all, fetch, ranking, choice, results
+localrules: all, fetch, ranking, choice, results, report
 
 
 rule all:
-    input: wf.results_path(cfg).as_posix()
+    input: wf.report_index(cfg).as_posix()
 
 
 # fetch writes data/mast/metadata.parquet; its marker names the download plan, so a config that needs
@@ -76,3 +76,18 @@ rule results:
     input: datasets_markers
     output: wf.results_path(cfg).as_posix()
     run: wf.call("select", "-c", CONFIG, "datasets")
+
+
+# the final model (workflow.final): a GPU job, since it evaluates the candidates on the validation
+# split where that has not been done
+rule final:
+    input: wf.results_path(cfg).as_posix()
+    output: wf.final_path(cfg).as_posix()
+    run: wf.call("select", "-c", CONFIG, "final")
+
+
+# figures, tables and the final models in runs/_workflow/report (astrounets report)
+rule report:
+    input: wf.results_path(cfg).as_posix(), wf.final_path(cfg).as_posix()
+    output: wf.report_index(cfg).as_posix()
+    run: wf.call("report", "-c", CONFIG)

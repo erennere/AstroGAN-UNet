@@ -4,7 +4,7 @@ executor: slurm
 jobs: 10                  # at most this many SLURM jobs at once
 keep-going: true
 rerun-incomplete: true
-rerun-triggers: [mtime]
+rerun-triggers: [mtime, input]   # input: a summary reruns when its set of runs changes (grid edited mid-study)
 retries: 2                # a job that hits the time limit or crashes is resubmitted and resumes
 latency-wait: 120         # shared file system: wait this long for a finished job's files
 slurm-keep-successful-logs: true   # SLURM logs: runs/_workflow/.snakemake/slurm_logs
@@ -19,5 +19,11 @@ set-resources:
     slurm_partition: gpu-single
     gres: "gpu:A40:1"
     runtime: 2880         # 48 hours
+    mem_mb: 64000
+    cpus_per_task: 16
+  final:                  # evaluates the final candidates on the validation split
+    slurm_partition: gpu-single
+    gres: "gpu:A40:1"
+    runtime: 600
     mem_mb: 64000
     cpus_per_task: 16

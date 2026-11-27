@@ -20,6 +20,13 @@ def no_data(image: np.ndarray) -> np.ndarray:
     return ~np.isfinite(image) | (image == 0)
 
 
+def fill_no_data(image: np.ndarray, sky: float, hole: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """(image with its no-data pixels set to the background level `sky`, no-data mask). Training,
+    evaluation and denoising (infer.py) all fill no-data pixels this way."""
+    hole = no_data(image) if hole is None else hole
+    return np.where(hole, np.float32(sky), image).astype(np.float32), hole
+
+
 def noisy_pair(store: CropStore, row: dict, ratio: float, seed: int, size: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """(clean, noisy, no-data mask) of a crop in e-/s; identical for identical (row, ratio, seed).
 
@@ -27,8 +34,7 @@ def noisy_pair(store: CropStore, row: dict, ratio: float, seed: int, size: int) 
     network sees flat, empty sky there instead of zeros far below the sky, which it would smear into dark
     blobs and which would set the minimum of the min_max and log_min_max scalings."""
     raw = store.crop(row["path"], int(row["y"]), int(row["x"]), size, float(row["weight_cut"]))
-    hole = no_data(raw)
-    clean = np.where(hole, np.float32(row["sky"]), raw).astype(np.float32)
+    clean, hole = fill_no_data(raw, row["sky"])
     noisy = add_noise(clean, row["sigma"], ratio, np.random.default_rng(seed))
     noisy[hole] = clean[hole]
     return clean, noisy, hole
@@ -49,9 +55,10 @@ def augment(rng: np.random.Generator, *arrays: np.ndarray) -> list[np.ndarray]:
     return out
 
 
-def scaled(scaler: Scaler, clean: np.ndarray, noisy: np.ndarray):
-    """(x, y, params) with both images scaled by parameters fitted on the noisy one; None if degenerate."""
-    params = scaler.fit(noisy)
+def scaled(scaler: Scaler, clean: np.ndarray, noisy: np.ndarray, valid: np.ndarray | None = None):
+    """(x, y, params) with both images scaled by parameters fitted on the noisy one (robust_z: on its
+    valid pixels); None if degenerate."""
+    params = scaler.fit(noisy, valid)
     if params is None:
         return None
     return scaler.forward(noisy, params)[..., None], scaler.forward(clean, params)[..., None], params
@@ -79,10 +86,10 @@ def training_stream(rows: pd.DataFrame, store: CropStore, cfg: Config, start_epo
     def make(item):
         index, ratio, seed = item
         rng = np.random.default_rng(seed)
-        clean, noisy, _ = noisy_pair(store, records[index], ratio, seed, size)
+        clean, noisy, hole = noisy_pair(store, records[index], ratio, seed, size)
         if cfg.train.augment:
-            clean, noisy = augment(rng, clean, noisy)
-        return scaled(scaler, clean, noisy)
+            clean, noisy, hole = augment(rng, clean, noisy, hole)  # same random draws as with two arrays
+        return scaled(scaler, clean, noisy, ~hole)
 
     with ThreadPoolExecutor(max_workers=cfg.train.loader_workers) as pool:
         for epoch in itertools.count(start_epoch):
@@ -112,7 +119,7 @@ def fixed_set(rows: pd.DataFrame, store: CropStore, cfg: Config, n: int, seed: i
         row = records[int(rng.choice(len(records), p=weights))]
         ratio = sample_ratio(rng, row["exptime"], cfg.noise)
         clean, noisy, hole = noisy_pair(store, row, ratio, int(rng.integers(2**63 - 1)), cfg.dataset.patch_size)
-        result = scaled(scaler, clean, noisy)
+        result = scaled(scaler, clean, noisy, ~hole)
         if result is None:
             continue
         xs.append(result[0]); ys.append(result[1]); params.append(result[2])

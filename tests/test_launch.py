@@ -63,6 +63,25 @@ def test_dry_run_lists_the_jobs(tmp_path, until, rules, absent):
     assert not (tmp_path / "data").exists(), "a dry run creates no data"
 
 
+@pytest.mark.slow
+def test_setups_added_after_the_ranking_are_trained_on_the_next_start(tmp_path):
+    """Stage 1 done and ranked, then the grid is extended (a study stopped, updated, started again): the
+    next start trains only the new run and ranks again; nothing is fetched or rebuilt. (With the mtime
+    trigger alone Snakemake saw nothing to do, since ranking.csv was newer than all its old inputs.)"""
+    def workflow(grid, *extra):
+        args = [a for o in _overrides(tmp_path) for a in ("--set", o)] + ["--set", f"workflow.models.grid={grid}"]
+        return subprocess.run([sys.executable, "-m", "astrounets", "workflow", "-c", str(SMOKE), "--local",
+                               "--until", "models", *args, *extra], capture_output=True, text=True, cwd=tmp_path)
+
+    first = workflow("{model.type: [unet]}", "--foreground")
+    assert first.returncode == 0, first.stdout[-3000:] + first.stderr[-3000:]
+    dry = workflow("{model.type: [unet, gan]}", "--dry-run")
+    assert dry.returncode == 0, dry.stdout + dry.stderr
+    table = dry.stdout[dry.stdout.index("Job stats"):].split("-------  -------\n", 1)[1].split("\n\n", 1)[0]
+    counts = {line.split()[0]: int(line.split()[1]) for line in table.splitlines() if line.strip()}
+    assert counts == {"job": 1, "ranking": 1, "total": 2}, counts
+
+
 def test_detached_process_survives_and_stops(tmp_path):
     log = tmp_path / "bg.log"
     pid = _spawn_detached([sys.executable, "-c", "import time; print('up', flush=True); time.sleep(60)", "snakemake"],
@@ -122,7 +141,7 @@ def test_slurm_profile_runs_the_whole_workflow(tmp_path, monkeypatch):
 
     jobs = [json.loads(p.read_text()) for p in sorted(state.glob("*.json"))]
     gpu = [j for j in jobs if j["partition"] == "gpu-single"]
-    assert len(gpu) == 6 and all(j["gres"] == "gpu:A40:1" for j in gpu)  # 2 models + 2 tune + 2 datasets runs
+    assert len(gpu) == 7 and all(j["gres"] == "gpu:A40:1" for j in gpu)  # 2 models + 2 tune + 2 datasets runs + final
     assert len([j for j in jobs if j["partition"] == "cpu-single"]) == 2  # the two datasets
     assert all(j["state"] == "COMPLETED" for j in jobs)
     results = pd.read_csv(workflow_dir(cfg) / "datasets" / "results.csv")

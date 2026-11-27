@@ -15,16 +15,32 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from astrounets.config import Config, from_dict, read_yaml
+from astrounets.config import Config
 from astrounets.data.dataset import load_crops
 from astrounets.data.fits_io import CropStore
 from astrounets.data.noise import noisy_sigma
 from astrounets.data.pairs import eval_table, noisy_pair
-from astrounets.data.scaling import Scaler
 from astrounets.evaluate.metrics import compare, summary
 from astrounets.files import atomic, write_json, write_parquet
 
 log = logging.getLogger(__name__)
+
+
+def example_ids(table: pd.DataFrame, n: int) -> set:
+    """Samples kept for examples.png: crops from both groups (sparse and crowded), each crop at another
+    exposure ratio, from the lowest to the highest."""
+    crowded = table["crowded"].to_numpy(bool) if "crowded" in table else np.zeros(len(table), bool)
+    parts = [part for part in (table[~crowded], table[crowded]) if len(part)]
+    chosen = set()
+    for g, part in enumerate(parts):
+        k = n // len(parts) + (1 if g < n % len(parts) else 0)
+        crops = part["crop_id"].drop_duplicates().head(k).tolist()
+        ratios = sorted(part["ratio"].unique())
+        for j, crop in enumerate(crops):
+            want = ratios[round(j * (len(ratios) - 1) / max(len(crops) - 1, 1))]
+            rows = part[part["crop_id"] == crop]
+            chosen.add(int(rows.iloc[int(np.argmin(np.abs(rows["ratio"].to_numpy(float) - want)))]["sample_id"]))
+    return chosen
 
 
 def eval_dir(run_dir: Path, dataset: str, split: str) -> Path:
@@ -32,41 +48,36 @@ def eval_dir(run_dir: Path, dataset: str, split: str) -> Path:
 
 
 def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = None, split: str | None = None) -> Path:
-    import keras
+    from astrounets.infer import TrainedModel
 
     run_dir = Path(run_dir or cfg.run_dir)
     dataset, split = dataset or cfg.dataset.name, split or cfg.eval.split
     best = run_dir / "checkpoints" / "best.keras"
     if not best.exists():
         raise FileNotFoundError(f"{best} not found; train the run first")
-    run_cfg = from_dict(read_yaml(run_dir / "config.yaml"), cfg.root)  # scaling + patch size the model was trained with
-    ps = run_cfg.dataset.patch_size
+    if not (run_dir / "checkpoints" / "best.json").exists():
+        raise FileNotFoundError(f"{run_dir}: no best checkpoint record")
+    trained = TrainedModel.load(run_dir)  # with the scaling and patch size it was trained with
+    ps = trained.patch_size
     crops = load_crops(cfg, dataset)
     built_ps = json.loads((cfg.dataset_dir(dataset) / "summary.json").read_text(encoding="utf-8"))["patch_size"]
     if built_ps != ps:
         raise ValueError(f"dataset '{dataset}' was cut into {built_ps}px crops but the model expects {ps}px")
     table = eval_table(crops, cfg, split, cfg.dataset_dir(dataset))
-    if not (run_dir / "checkpoints" / "best.json").exists():
-        raise FileNotFoundError(f"{run_dir}: no best checkpoint record")
-    model = keras.models.load_model(best, compile=False)
-    scaler = Scaler(run_cfg.scaling.mode, run_cfg.scaling.log_clip_max)
     store = CropStore(cfg.mast_dir, cfg.dataset.hdu, cfg.dataset.weight_hdu)
     e = cfg.eval
-    samples, sources, examples = [], [], {"noisy": [], "rec": [], "clean": []}
+    samples, sources = [], []
+    examples = {"noisy": [], "rec": [], "clean": [], "ratio": [], "crowded": [], "sample_id": []}
+    keep = example_ids(table, e.n_examples)
     records = table.to_dict("records")
     for start in range(0, len(records), e.batch_size):
-        batch = []
-        for row in records[start:start + e.batch_size]:
-            clean, noisy, hole = noisy_pair(store, row, row["ratio"], row["noise_seed"], ps)
-            params = scaler.fit(noisy)
-            if params is not None:
-                batch.append((row, clean, noisy, hole, params))
-        if not batch:
-            continue
-        x = np.stack([scaler.forward(noisy, params)[..., None] for _, _, noisy, _, params in batch])
-        pred = np.asarray(model(x, training=False))[..., 0]
-        for (row, clean, noisy, hole, params), p in zip(batch, pred):
-            rec = scaler.inverse(p, params)
+        batch = [(row, *noisy_pair(store, row, row["ratio"], row["noise_seed"], ps))
+                 for row in records[start:start + e.batch_size]]
+        recs = trained.reconstruct(np.stack([noisy for _, _, noisy, _ in batch]), e.batch_size,
+                                   valid=np.stack([~hole for _, _, _, hole in batch]))
+        for (row, clean, noisy, hole), rec in zip(batch, recs):
+            if rec is None:  # constant crop: the scaling cannot handle it
+                continue
             rec[hole] = clean[hole]  # no-data pixels: the same flat background in all three images
             threshold = e.detect_nsigma * noisy_sigma(row["sigma"], row["ratio"])
             sample, src = compare(clean, noisy, rec, threshold, e, row["photflam"], row["photplam"])
@@ -75,8 +86,10 @@ def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = Non
                             "threshold": threshold, **sample})
             src = src.assign(**ids)
             sources.append(src)
-            if len(examples["rec"]) < e.n_examples:
-                examples["noisy"].append(noisy); examples["rec"].append(rec); examples["clean"].append(clean)
+            if row["sample_id"] in keep:
+                for key, value in (("noisy", noisy), ("rec", rec), ("clean", clean), ("ratio", row["ratio"]),
+                                   ("crowded", bool(row.get("crowded", False))), ("sample_id", row["sample_id"])):
+                    examples[key].append(value)
     store.close()
     samples_df = pd.DataFrame(samples)
     sources_df = pd.concat(sources, ignore_index=True) if sources else pd.DataFrame()
@@ -84,7 +97,10 @@ def evaluate(cfg: Config, run_dir: Path | None = None, dataset: str | None = Non
     write_parquet(samples_df, out / "samples.parquet")
     write_parquet(sources_df, out / "sources.parquet")
     with atomic(out / "examples.npz") as tmp:
-        np.savez_compressed(tmp, **{k: np.stack(v) if v else np.zeros((0, ps, ps)) for k, v in examples.items()})
+        images = {k: np.stack(examples[k]) if examples[k] else np.zeros((0, ps, ps), np.float32)
+                  for k in ("noisy", "rec", "clean")}
+        labels = {k: np.asarray(examples[k]) for k in ("ratio", "crowded", "sample_id")}
+        np.savez_compressed(tmp, **images, **labels)
     result = summary(samples_df, sources_df, e.mag_bins)
     best_info = json.loads((run_dir / "checkpoints" / "best.json").read_text(encoding="utf-8"))
     result.update({"run": run_dir.name, "dataset": dataset, "split": split, "checkpoint_epoch": best_info["epoch"]})

@@ -48,7 +48,7 @@ def test_ratio_range_respects_minimum_new_exposure(cfg):
     assert min(ratios) >= cfg.noise.ratio_min and max(ratios) <= 10.0
 
 
-@pytest.mark.parametrize("mode", ["none", "z_scale", "min_max", "log_min_max"])
+@pytest.mark.parametrize("mode", ["none", "z_scale", "robust_z", "min_max", "log_min_max"])
 def test_perfect_prediction_returns_true_flux(mode):
     rng = np.random.default_rng(2)
     clean, sigma, catalog = make_image(rng, 128, 1000.0, n_sources=6, border=False)
@@ -67,6 +67,37 @@ def test_perfect_prediction_returns_true_flux(mode):
 def test_scaler_rejects_constant_input():
     assert Scaler("z_scale").fit(np.zeros((8, 8))) is None
     assert Scaler("min_max").fit(np.ones((8, 8))) is None
+    assert Scaler("robust_z").fit(np.ones((8, 8))) is None
+
+
+def test_robust_z_scale_is_set_by_the_noise_not_by_a_bright_star():
+    """z_scale: one bright star raises the crop's std far above the noise, so the noise all but vanishes in
+    scaled units; robust_z keeps the noise at about one unit."""
+    rng = np.random.default_rng(5)
+    sky = 0.7 + rng.normal(0, 0.1, (256, 256))
+    star = sky.copy()
+    yy, xx = np.mgrid[0:256, 0:256]
+    star += 2000.0 * np.exp(-0.5 * ((yy - 128) ** 2 + (xx - 100) ** 2) / 1.5 ** 2)
+    z, r = Scaler("z_scale"), Scaler("robust_z")
+    assert z.fit(star)[1] / z.fit(sky)[1] > 30
+    assert r.fit(star)[1] / r.fit(sky)[1] == pytest.approx(1, abs=0.02)
+    assert r.fit(sky)[1] == pytest.approx(0.1, rel=0.03) and r.fit(sky)[0] == pytest.approx(0.7, abs=0.005)
+    noise = r.forward(star, r.fit(star))[:, 200:]  # far from the star
+    assert noise.std() == pytest.approx(1, rel=0.05)
+
+
+def test_robust_z_ignores_no_data_pixels_the_other_modes_do_not():
+    """No-data pixels hold the sky level; robust_z takes its statistics from the valid pixels only, the
+    other modes keep using every pixel (as their runs were trained)."""
+    rng = np.random.default_rng(6)
+    image = 0.7 + rng.normal(0, 0.1, (64, 64))
+    valid = np.ones((64, 64), bool)
+    valid[:, :40] = False  # 62 % no data, filled with the sky level
+    filled = np.where(valid, image, 0.7)
+    assert Scaler("robust_z").fit(filled, valid)[1] == pytest.approx(0.1, rel=0.1)
+    assert Scaler("robust_z").fit(filled) is None, "without the mask the fill (most pixels) makes the MAD 0"
+    for mode in ("none", "z_scale", "min_max", "log_min_max"):
+        assert Scaler(mode).fit(filled, valid) == Scaler(mode).fit(filled)
 
 
 def test_ab_magnitude_matches_hand_calculation():

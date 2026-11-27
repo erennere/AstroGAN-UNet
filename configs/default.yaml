@@ -89,7 +89,8 @@ noise:
   min_new_exposure: 60.0   # seconds; caps the ratio per image
 
 scaling:
-  mode: z_scale            # none | z_scale | min_max | log_min_max   (fitted on the noisy input)
+  mode: z_scale            # none | z_scale | robust_z | min_max | log_min_max   (fitted on the noisy input;
+                           # robust_z: median and 1.4826 x MAD of the valid pixels, so bright stars do not set the scale)
   log_clip_max: 80.0
 
 model:
@@ -155,6 +156,7 @@ eval:
 
 plots:
   dpi: 150
+  hexbins: true            # the thesis hexbin figures (flux ratio, Kron radius, ...) for the final models
 
 ranking:                   # stage-1 ranking: weighted mean of per-measure ranks
   guard: true              # rank only runs that find at least as many real sources, and no more fake
@@ -176,10 +178,10 @@ workflow:
   models:                  # stage 1: which setup works best? every valid combination, on dataset.name
     set:                   # applies to stage 1 only: shorter training is enough to rank
       train.epochs: 20
-    grid:                  # ssim loss needs min_max or log_min_max scaling: 8 combinations are skipped
+    grid:                  # ssim loss needs min_max or log_min_max scaling: 12 combinations are skipped
       model.type: [unet, gan]
       model.attention: [false, true]
-      scaling.mode: [none, z_scale, min_max, log_min_max]
+      scaling.mode: [none, z_scale, robust_z, min_max, log_min_max]
       train.loss: [log_cosh, simae, mae, ssim]
     evaluate: [own:val]    # ranked on the validation split
   tune:                    # learning rate and epochs for the best setups
@@ -192,3 +194,19 @@ workflow:
   datasets:                # stage 2: every tuned setup trained on each dataset, tested on all
     train_on: [all, faber, momcheva]
     evaluate: [all:test, faber:test, momcheva:test]
+  final:                   # the final model (`astrounets denoise` uses it by default): of the stage-2 models
+    train_on: all          # trained on this dataset (one per tuned setup), the best by the ranking rule
+    select_on: all:val     # above on this target - validation, so the test numbers stay unbiased
+
+# ---- denoise: a trained model on real images (`astrounets denoise IMAGE ...`) ---------------------
+# Images of any size are cut into overlapping tiles of the model's patch size, each scaled on its own
+# as in training, and blended back; no-data pixels are handled as in training and keep their values.
+denoise:
+  model: best              # best = the study's final model (workflow.final); or a model folder: a run
+                           # folder or one of runs/_workflow/report/models/<dataset>/<run>
+  out: denoised            # <out>/<image>_rec.fits (input header and WCS) and <image>_compare.png
+  overlap: 64              # pixels shared by neighbouring tiles, blended with a cosine taper
+  batch_size: 4            # tiles per model call: on a CPU about 3 GB of memory (8: 5 GB, 16: > 7 GB), no faster
+  tta: false               # average over the 8 rotations and flips (8x the time)
+  figure: true             # original | reconstruction | difference: whole image and a cutout
+  zoom: 256                # side of the full-resolution cutout(s) in the figure, pixels

@@ -34,6 +34,11 @@ def test_training_stream_is_reproducible_and_scaled_from_noisy(mock_data):
     assert not all(np.array_equal(p[0], q[0]) for p, q in zip(first, later)), "each epoch draws new samples"
     for x, y in first:  # z-scaled with the noisy image's mean and std: x has mean 0, std 1; y does not
         assert x.shape == (64, 64, 1) and abs(x.mean()) < 1e-4 and x.std() == pytest.approx(1, rel=1e-3)
+    robust = replace(mock_data, {"scaling": {"mode": "robust_z"}})
+    for x, _ in zip(training_stream(rows, store, robust, 0), range(6)):  # median 0, normalised MAD 1
+        v = x[0].ravel()
+        mad = 1.4826 * np.median(np.abs(v - np.median(v)))
+        assert abs(np.median(v)) < 0.1 and 0.75 < mad < 1.1  # no-data pixels (up to 20 %) sit at the median
 
 
 @pytest.mark.parametrize("model_type", ["unet", "gan"])
@@ -76,6 +81,32 @@ def test_resume_continues_from_last_epoch(mock_data, monkeypatch):
     assert history["epoch"].tolist() == [1, 2, 3]
     best_after = json.loads((run / "checkpoints" / "best.json").read_text())
     assert best_after["val_rec_loss"] <= best_before["val_rec_loss"]
+
+
+def test_a_run_started_by_an_older_version_resumes(mock_data, monkeypatch):
+    """A study stopped, updated and started again: the run's saved config lacks fields added since
+    (denoise, workflow.final, plots.hexbins). It resumes in the same folder; the config is completed."""
+    import yaml
+
+    import astrounets.train as tr
+
+    cfg = replace(mock_data, {"train": {"epochs": 2, "samples_per_epoch": 16, "lr_drops": []}})
+    original = tr.RunRecorder.on_epoch_end
+
+    def stop_after_one(self, epoch, logs=None):
+        original(self, epoch, logs)
+        self.model.stop_training = True
+
+    monkeypatch.setattr(tr.RunRecorder, "on_epoch_end", stop_after_one)
+    run = train(cfg)
+    (run / "train.json").unlink()  # killed after epoch 1
+    saved = yaml.safe_load((run / "config.yaml").read_text())
+    del saved["denoise"], saved["workflow"]["final"], saved["plots"]["hexbins"]
+    (run / "config.yaml").write_text(yaml.safe_dump(saved, sort_keys=False))
+    monkeypatch.setattr(tr.RunRecorder, "on_epoch_end", original)
+    assert train(cfg) == run
+    assert pd.read_csv(run / "history.csv")["epoch"].tolist() == [1, 2]
+    assert "denoise" in yaml.safe_load((run / "config.yaml").read_text())
 
 
 def test_run_folder_cannot_be_reused_by_another_setup(mock_data, tmp_path):

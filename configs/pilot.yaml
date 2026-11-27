@@ -60,3 +60,6 @@ workflow:
   datasets:
     train_on: [pilot]
     evaluate: [pilot:test]
+  final:
+    train_on: pilot
+    select_on: pilot:val

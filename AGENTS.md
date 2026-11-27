@@ -16,4 +16,16 @@
   `data/mock.py`; never on real data. Science invariants live in `tests/test_science.py`; the slow
   tests run the whole workflow locally, through the SLURM profile and as run.sbatch (`tests/fake_slurm.py`).
 - Keep the noise, scaling and evaluation paths shared (`data/pairs.py`): training, validation,
-  evaluation and plots must use the same functions.
+  evaluation and plots must use the same functions. Evaluation and `astrounets denoise` reconstruct
+  through the same `TrainedModel.reconstruct` (`infer.py`) and fill no-data pixels with `fill_no_data`.
+- `infer.py` reads a model's config.yaml key by key, so trained models keep loading when the
+  configuration gains fields; keep it that way.
+- Figures (`plots.py`, `report.py`) are drawn only from files the stages wrote; never compute a measure
+  there that the evaluation does not store. A running study loads its frozen `runs/_workflow/config.yaml`
+  in every job: a new config field breaks it, so such changes are pulled on the cluster between studies.
+- Code that changes what a run sees (data, noise, scaling) bumps `config.DATA_VERSION`.
+- A study can be stopped, updated and started again: new grid values only add runs (existing runs keep
+  their identity and resume; `test_a_new_scaling_mode_adds_runs_and_keeps_the_others`), a run's saved
+  config may lack fields added since (`train._check_run_folder` fills them in), and the profiles use
+  `rerun-triggers: [mtime, input]` so a summary reruns when its set of runs grows. A new scaling mode must
+  leave the existing modes' training data byte-identical (`Scaler.fit`'s `valid` is for robust_z only).

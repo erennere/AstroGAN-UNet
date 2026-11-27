@@ -23,7 +23,7 @@ class ConfigError(ValueError):
     """Raised for missing, unknown, mistyped or contradictory configuration values."""
 
 
-SCALING_MODES = ("none", "z_scale", "min_max", "log_min_max")
+SCALING_MODES = ("none", "z_scale", "robust_z", "min_max", "log_min_max")
 BOUNDED_SCALINGS = ("min_max", "log_min_max")
 LOSSES = ("log_cosh", "simae", "mae", "mse", "ssim")
 MODEL_TYPES = ("unet", "gan")
@@ -192,6 +192,7 @@ class Eval:
 @dataclass(frozen=True)
 class Plots:
     dpi: int
+    hexbins: bool
 
 
 @dataclass(frozen=True)
@@ -225,10 +226,28 @@ class DatasetsStage:
 
 
 @dataclass(frozen=True)
+class FinalStage:
+    train_on: str
+    select_on: str
+
+
+@dataclass(frozen=True)
 class Workflow:
     models: ModelsStage
     tune: TuneStage
     datasets: DatasetsStage
+    final: FinalStage
+
+
+@dataclass(frozen=True)
+class Denoise:
+    model: str
+    out: str
+    overlap: int
+    batch_size: int
+    tta: bool
+    figure: bool
+    zoom: int
 
 
 @dataclass(frozen=True)
@@ -247,6 +266,7 @@ class Config:
     plots: Plots
     ranking: Ranking
     workflow: Workflow
+    denoise: Denoise
     root: str  # repository root; set by the loader, never written in YAML
 
     # ---- derived locations ------------------------------------------------------------------
@@ -638,3 +658,13 @@ def _validate_workflow(cfg: Config, need) -> None:
     need(bool(w.datasets.train_on) and all(n in cfg.datasets for n in w.datasets.train_on),
          f"workflow.datasets.train_on: every name must be defined under datasets ({sorted(cfg.datasets)})")
     need(bool(w.datasets.evaluate), "workflow.datasets.evaluate needs at least one target")
+    need(w.final.train_on in w.datasets.train_on,
+         f"workflow.final.train_on: '{w.final.train_on}' must be one of workflow.datasets.train_on {w.datasets.train_on}")
+    dataset, sep, split = w.final.select_on.partition(":")
+    need(sep == ":" and split in SPLITS and dataset in cfg.datasets,
+         f"workflow.final.select_on: '{w.final.select_on}' must be <dataset>:<split> with a dataset from datasets "
+         f"and a split from {SPLITS}")
+    n = cfg.denoise
+    need(bool(n.model.strip()), "denoise.model: 'best' or a model folder")
+    need(n.overlap >= 0 and n.batch_size >= 1 and n.zoom >= 16,
+         "denoise: overlap >= 0, batch_size >= 1, zoom >= 16")

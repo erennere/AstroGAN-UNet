@@ -9,6 +9,10 @@ tune      the `top` best setups of stage 1, each trained once per rate in workfl
           max_epochs) become the setup's epoch budget
 datasets  stage 2: every tuned setup trained on each dataset in train_on, with the chosen rate and
           epochs, and tested on every workflow.datasets.evaluate target
+final     the final model: of the stage-2 runs trained on workflow.final.train_on (one per tuned
+          setup), the best by the stage-1 ranking rule on workflow.final.select_on (the validation
+          split, so the test numbers stay unbiased); evaluated there first if needed.
+          `astrounets denoise` uses it unless it is given another model
 
 A job trains one run (resuming from its checkpoint), evaluates it on its targets and draws its
 plots. Runs whose losses turn NaN are recorded as diverged and never ranked.
@@ -18,6 +22,8 @@ Files under runs/_workflow/
   models/ranking.csv                  stage-1 ranking
   tune/choice.csv                     chosen learning rate and epochs per setup
   datasets/results.csv                final table: setup x training dataset x test dataset
+  final/final.json, final/ranking.csv the final model and the ranking it was chosen by
+  report/                             figures, tables and the final models (astrounets report)
   <stage>/done/<dataset>/<run>.json   one marker per finished job
   logs/                               workflow logs (`astrounets status` shows the latest)
 """
@@ -74,6 +80,15 @@ def choice_path(cfg: Config) -> Path:
 
 def results_path(cfg: Config) -> Path:
     return workflow_dir(cfg) / "datasets" / "results.csv"
+
+
+def final_path(cfg: Config) -> Path:
+    return workflow_dir(cfg) / "final" / "final.json"
+
+
+def report_index(cfg: Config) -> Path:
+    """runs/_workflow/report/index.txt: written last by `astrounets report`."""
+    return workflow_dir(cfg) / "report" / "index.txt"
 
 
 def fetch_marker(cfg: Config) -> Path:
@@ -306,7 +321,7 @@ def _run_job(run: Run) -> dict:
             if not (eval_dir(run_dir, dataset, split) / "summary.json").exists():
                 evaluate(cfg, run_dir, dataset, split)
             evaluations.append(f"{dataset}:{split}")
-    make_plots(cfg, run_dir)
+    make_plots(cfg, run_dir, detailed=cfg.plots.hexbins and run.stage in ("datasets", "single"))  # final models
     return {"run": run.key, "train": result, "evaluated": evaluations}
 
 
@@ -345,9 +360,13 @@ def _eval_summary(run: Run, dataset: str, split: str) -> dict:
 
 
 # ------------------------------------------------------------------------- stage results (select)
+SELECTIONS = (*STAGES, "final")
+
+
 def select(cfg: Config, stage: str) -> Path:
-    """Summarise a finished stage: models -> ranking.csv, tune -> choice.csv, datasets -> results.csv."""
-    return {"models": rank_models, "tune": choose_tuning, "datasets": collect_results}[stage](cfg)
+    """Summarise a finished stage: models -> ranking.csv, tune -> choice.csv, datasets -> results.csv,
+    final -> final.json."""
+    return {"models": rank_models, "tune": choose_tuning, "datasets": collect_results, "final": choose_final}[stage](cfg)
 
 
 def rank_models(cfg: Config) -> Path:
@@ -460,6 +479,59 @@ def collect_results(cfg: Config) -> Path:
     return out
 
 
+def choose_final(cfg: Config) -> Path:
+    """The final model: the stage-2 runs trained on final.train_on, ranked on final.select_on with the
+    ranking rule of stage 1 (weights, crop groups, guard). Runs not yet evaluated there are evaluated
+    first (a study started before this step existed evaluated stage 2 on the test sets only)."""
+    from astrounets.evaluate.run import eval_dir, evaluate
+
+    f = cfg.workflow.final
+    dataset, split = targets(cfg, [f.select_on])[0]
+    rows = []
+    for run in Plan(cfg).runs("datasets"):
+        if run.cfg.dataset.name != f.train_on:
+            continue
+        status = _marker(cfg, "datasets", run)["train"]["status"]
+        row = {"key": run.key, "setup": _setup_text(run.setup), "status": status}
+        if status != "diverged":
+            if not (eval_dir(run.cfg.run_dir, dataset, split) / "summary.json").exists():
+                with run_lock(run.cfg.run_dir):
+                    evaluate(run.cfg, run.cfg.run_dir, dataset, split)
+            row.update(_eval_summary(run, dataset, split)["ranking"])
+        rows.append(row)
+    if not rows:
+        raise RuntimeError(f"stage 2 has no run trained on '{f.train_on}' (workflow.final.train_on)")
+    table = rank_table(pd.DataFrame(rows), cfg.ranking.weights, cfg.ranking.guard, cfg.ranking.groups)
+    write_csv(table, final_path(cfg).parent / "ranking.csv")
+    log.info("final-model ranking on %s:\n%s", f.select_on, table.drop(columns=["setup"]).to_string(index=False))
+    if table["rank"].isna().all():
+        raise RuntimeError(f"no stage-2 model trained on '{f.train_on}' passed the guard on {f.select_on}; "
+                           "see the table above")
+    best = table.iloc[0]
+    out = write_json(final_path(cfg), {
+        "run": best["key"], "setup": json.loads(best["setup"]), "train_on": f.train_on,
+        "selected_on": f"{dataset}:{split}", "score": float(best["score"]), "candidates": int(len(table)),
+        "ranked": int(table["rank"].notna().sum())})
+    log.info("final model: %s (score %.3f of %d candidates)", best["key"], best["score"], len(table))
+    return out
+
+
+def final_model(cfg: Config) -> Path:
+    """Folder of the study's final model: its run folder, or the report's copy of it when only the
+    report is at hand (say, copied from the cluster)."""
+    report = report_index(cfg).parent
+    for source in (final_path(cfg), report / "tables" / "final.json"):
+        if source.exists():
+            key = json.loads(source.read_text(encoding="utf-8"))["run"]
+            for folder in (cfg.runs_dir / key, report / "models" / key):
+                if (folder / "checkpoints" / "best.keras").exists() or (folder / "best.keras").exists():
+                    return folder
+            raise FileNotFoundError(f"{source} names the final model {key}, but neither {cfg.runs_dir / key} "
+                                    f"nor {report / 'models' / key} holds it")
+    raise FileNotFoundError(f"the study has no final model yet ({final_path(cfg)} not found): finish the "
+                            "workflow, or name a model folder (denoise.model / --model)")
+
+
 # ---------------------------------------------------------------------------------------- status
 def progress(cfg: Config) -> list[tuple[str, str]]:
     """(stage, text) lines for `astrounets status`."""
@@ -483,4 +555,6 @@ def progress(cfg: Config) -> list[tuple[str, str]]:
         if final[stage].exists():
             text += f"; {final[stage].name} written"
         lines.append((stage, text))
+    if final_path(cfg).exists():
+        lines.append(("final", json.loads(final_path(cfg).read_text(encoding="utf-8"))["run"]))
     return lines
